@@ -1,0 +1,21 @@
+Use this one command every time:
+
+cd "f:\Stonk Broker\equityflow"
+powershell -ExecutionPolicy Bypass -File .\start-all.ps1
+
+What it does:
+- kills old python/node processes
+- starts backend on port 8001
+- starts frontend on port 3000
+
+Open:
+Frontend: http://localhost:3000
+Backend health: http://127.0.0.1:8001/api/status
+
+If script execution is blocked:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+powershell -ExecutionPolicy Bypass -File .\start-all.ps1   ----main
+
+First time only:
+cd "f:\Stonk Broker\equityflow"; python -m pip install -r backend\requirements.txt
+cd "f:\Stonk Broker\equityflow"; npm installfix the err
