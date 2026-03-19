@@ -40,6 +40,27 @@ Frontend:
 npm run dev -- --port 3000
 ```
 
+## Azure App Service Backend Deploy
+Use this when hosting the frontend on Vercel and the FastAPI backend on Azure App Service.
+
+### App settings to add in Azure
+- `GROWW_API_KEY`
+- `GROWW_API_SECRET`
+- Optional `GROWW_ACCESS_TOKEN`
+- `CORS_ALLOW_ORIGINS=https://your-vercel-domain.vercel.app`
+
+### Startup command
+Set the Azure startup command to:
+
+```bash
+bash startup.sh
+```
+
+### Notes
+- Root `requirements.txt` forwards to `backend/requirements.txt` so Azure installs backend deps correctly.
+- Health check URL: `https://<your-app>.azurewebsites.net/api/status`
+- In Vercel set `NEXT_PUBLIC_API_URL=https://<your-app>.azurewebsites.net`
+
 ## Quick Health Checks
 - `GET /api/status`
 - `GET /api/stocks`
