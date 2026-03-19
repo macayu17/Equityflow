@@ -1,3 +1,22 @@
+function normalizeApiBaseUrl(value?: string): string {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    return process.env.NODE_ENV === "development" ? "http://localhost:8001" : "";
+  }
+
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, "");
+  if (/^https?:\/\//i.test(withoutTrailingSlash)) {
+    return withoutTrailingSlash;
+  }
+
+  if (withoutTrailingSlash.startsWith("//")) {
+    return `https:${withoutTrailingSlash}`;
+  }
+
+  return `https://${withoutTrailingSlash}`;
+}
+
 export const GROWW_THEME = {
   colors: {
     accent: "#00c853",
@@ -13,7 +32,7 @@ export const GROWW_THEME = {
 
 export const API_CONFIG = {
   // Groww API base URL (proxied through our FastAPI backend)
-  baseUrl: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001",
+  baseUrl: normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL),
   // Polling intervals
   pricePollingMs: 500,
   indexPollingMs: 500,
