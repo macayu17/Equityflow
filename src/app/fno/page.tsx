@@ -121,7 +121,7 @@ function FnoPageContent() {
     }
 
     return [];
-  }, [optionChain, underlying.ticker, underlying.lotSize, expiry, spotPrice]);
+  }, [optionChain, underlying.ticker, underlying.lotSize, expiry]);
   const futures = useMemo<FutureRow[]>(() => [], []);
 
   const openFnoOrder = (ticker: string, name: string, ltp: number, type: OrderType, lots: number = underlying.lotSize) => {

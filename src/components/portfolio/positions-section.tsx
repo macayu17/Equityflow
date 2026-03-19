@@ -13,6 +13,16 @@ import { useAllStreamPrices } from "@/hooks/usePriceStream";
 import { API_CONFIG } from "@/lib/constants";
 import type { OrderType, Position } from "@/lib/types";
 
+interface FnoOptionChainEntry {
+    strikePrice: number;
+    CE?: {
+        ltp?: number;
+    };
+    PE?: {
+        ltp?: number;
+    };
+}
+
 function isFnoContractTicker(ticker: string): boolean {
     const symbol = ticker.toUpperCase();
     const isFuture = symbol.endsWith("FUT");
@@ -220,12 +230,12 @@ export function PositionsSection() {
                             { cache: "no-store" }
                         );
                         if (chainRes.ok) {
-                            const chainData = await chainRes.json();
+                            const chainData = await chainRes.json() as { optionChain?: FnoOptionChainEntry[] };
                             const optionType = pos.ticker.includes("CE") ? "CE" : "PE";
                             const strikeMatch = pos.ticker.match(/\d+/);
                             if (strikeMatch) {
                                 const strikePrice = Number(strikeMatch[0]);
-                                const row = chainData.optionChain?.find((r: any) => r.strikePrice === strikePrice);
+                                const row = chainData.optionChain?.find((entry) => entry.strikePrice === strikePrice);
                                 if (row && row[optionType]) {
                                     const ltp = Number(row[optionType].ltp);
                                     if (active && ltp > 0) {
