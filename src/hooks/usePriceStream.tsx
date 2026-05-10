@@ -12,15 +12,13 @@ import {
 import { API_CONFIG } from "@/lib/constants";
 
 /* ─────────────────────────────────────────────────────────────
- * Demand-based SSE price stream.
+ * Consolidated workstation SSE stream.
  *
- * Instead of fetching ALL 89+ stocks, the provider tracks which
- * tickers are currently mounted on screen.  It opens a single
- * EventSource to /api/stream/demand?tickers=A,B,C  so the
- * backend only hits Groww for what's actually visible.
+ * The provider tracks mounted stock tickers, then opens one
+ * EventSource to /api/stream/workstation with visible symbols,
+ * index data, commodity data, and backend health in a single feed.
  *
- * Connection goes DIRECTLY to the backend (port 8001) — no
- * Next.js proxy — to eliminate buffering latency.
+ * Connection goes directly to the backend to avoid proxy buffering.
  * ────────────────────────────────────────────────────────────── */
 
 const BACKEND = API_CONFIG.baseUrl; // e.g. http://localhost:8001
@@ -48,6 +46,13 @@ interface PriceStreamCtx {
   indices: IndexPrice[];
   /** Whether the SSE connection is open */
   connected: boolean;
+  /** Backend/live-data health for terminal degradation states */
+  status: {
+    connected?: boolean;
+    degraded_reason?: string;
+    rate_limited_for_sec?: number;
+    last_success_at?: string | null;
+  } | null;
   /** Register a ticker as "on screen" — call on mount */
   subscribe: (ticker: string) => void;
   /** Unregister a ticker — call on unmount */
@@ -59,6 +64,7 @@ const PriceStreamContext = createContext<PriceStreamCtx>({
   commodities: {},
   indices: [],
   connected: false,
+  status: null,
   subscribe: () => {},
   unsubscribe: () => {},
 });
@@ -103,13 +109,16 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
 
   /* ── Price state ── */
   const [prices, setPrices] = useState<Record<string, TickerPrice>>({});
+  const [commodities, setCommodities] = useState<Record<string, TickerPrice>>({});
+  const [indices, setIndices] = useState<IndexPrice[]>([]);
+  const [status, setStatus] = useState<PriceStreamCtx["status"]>(null);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeTickerKey = activeTickers.join(",");
 
-  /* ── Demand-based stream ── */
+  /* ── Consolidated workstation stream ── */
   useEffect(() => {
-    // Close previous connection when activeTickers change
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
@@ -119,17 +128,16 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
       reconnectTimer.current = null;
     }
 
-    if (activeTickers.length === 0) {
-      setConnected(false);
-      return;
-    }
-
     let disposed = false;
-    const tickerParam = activeTickers.join(",");
 
     function connect() {
       if (disposed) return;
-      const url = `${BACKEND}/api/stream/demand?tickers=${encodeURIComponent(tickerParam)}`;
+      const params = new URLSearchParams({
+        commodities: "true",
+        indices: "true",
+      });
+      if (activeTickerKey) params.set("symbols", activeTickerKey);
+      const url = `${BACKEND}/api/stream/workstation?${params.toString()}`;
       const es = new EventSource(url);
       esRef.current = es;
 
@@ -140,18 +148,32 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
       es.onmessage = (event) => {
         if (disposed) return;
         try {
-          const data: Record<string, { ltp: number; change: number; changePercent: number }> =
-            JSON.parse(event.data);
-          // Merge into prices (additive — keeps previously seen tickers)
-          setPrices((prev) => {
-            const next = { ...prev };
-            for (const [t, p] of Object.entries(data)) {
-              if (typeof p.ltp === "number" && p.ltp > 0) {
-                next[t] = p;
+          const data = JSON.parse(event.data);
+          if (data.status) setStatus(data.status);
+          if (data.prices && typeof data.prices === "object") {
+            setPrices((prev) => {
+              const next = { ...prev };
+              for (const [t, p] of Object.entries(data.prices as Record<string, TickerPrice>)) {
+                if (typeof p?.ltp === "number" && p.ltp > 0) {
+                  next[t] = p;
+                }
               }
-            }
-            return next;
-          });
+              return next;
+            });
+          }
+          if (data.commodities && typeof data.commodities === "object") {
+            setCommodities(data.commodities);
+          }
+          if (Array.isArray(data.indices)) {
+            setIndices(data.indices);
+          }
+          if (data.error) {
+            setStatus((prev) => ({
+              ...prev,
+              connected: false,
+              degraded_reason: data.error,
+            }));
+          }
         } catch {
           // ignore
         }
@@ -162,7 +184,7 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
         setConnected(false);
         es.close();
         esRef.current = null;
-        reconnectTimer.current = setTimeout(connect, 800);
+        reconnectTimer.current = setTimeout(connect, 1200);
       };
     }
 
@@ -176,61 +198,11 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
         esRef.current = null;
       }
     };
-  }, [activeTickers]);
-
-  /* ── Legacy: commodities & indices come from the global stream ── */
-  const [commodities, setCommodities] = useState<Record<string, TickerPrice>>({});
-  const [indices, setIndices] = useState<IndexPrice[]>([]);
-  const globalEsRef = useRef<EventSource | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    function connectGlobal() {
-      if (disposed) return;
-      const es = new EventSource(`${BACKEND}/api/stream/prices`);
-      globalEsRef.current = es;
-      es.onmessage = (event) => {
-        if (disposed) return;
-        try {
-          const data = JSON.parse(event.data);
-          if (data.commodities && Object.keys(data.commodities).length) setCommodities(data.commodities);
-          if (data.indices && data.indices.length) setIndices(data.indices);
-          // Also pick up stock prices from global stream as a fallback
-          if (data.prices && Object.keys(data.prices).length) {
-            setPrices((prev) => {
-              const next = { ...prev };
-              for (const [t, p] of Object.entries(data.prices as Record<string, TickerPrice>)) {
-                if (typeof p?.ltp === "number" && p.ltp > 0) {
-                  next[t] = p;
-                }
-              }
-              return next;
-            });
-          }
-        } catch {
-          // ignore
-        }
-      };
-      es.onerror = () => {
-        if (disposed) return;
-        es.close();
-        globalEsRef.current = null;
-        setTimeout(connectGlobal, 2000);
-      };
-    }
-    connectGlobal();
-    return () => {
-      disposed = true;
-      if (globalEsRef.current) {
-        globalEsRef.current.close();
-        globalEsRef.current = null;
-      }
-    };
-  }, []);
+  }, [activeTickerKey]);
 
   return (
     <PriceStreamContext.Provider
-      value={{ prices, commodities, indices, connected, subscribe, unsubscribe }}
+      value={{ prices, commodities, indices, connected, status, subscribe, unsubscribe }}
     >
       {children}
     </PriceStreamContext.Provider>

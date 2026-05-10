@@ -131,17 +131,17 @@ export default function PortfolioPage() {
   };
 
   return (
-    <div className="px-4 md:px-6 py-6 max-w-7xl mx-auto space-y-6">
+    <div className="terminal-shell min-h-full px-3 py-3 md:px-4 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-primary dark:text-primary-dark">Portfolio</h1>
-          <p className="text-sm text-secondary dark:text-secondary-dark">
+          <h1 className="terminal-title text-sm">Portfolio</h1>
+          <p className="terminal-subtle text-xs">
             Your virtual holdings & performance
           </p>
         </div>
         <button
           onClick={handleReset}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold border border-border dark:border-border-dark text-secondary dark:text-secondary-dark hover:border-loss/50 hover:text-loss transition-all"
+          className="flex items-center gap-1.5 rounded-sm border border-loss/30 px-3.5 py-2 text-xs font-semibold uppercase tracking-[0.05em] text-loss transition-colors hover:bg-loss/10"
         >
           <RotateCcw size={12} />
           Reset Portfolio
@@ -153,14 +153,14 @@ export default function PortfolioPage() {
       <PositionsSection />
 
       <div>
-        <h2 className="text-[15px] font-bold text-primary dark:text-primary-dark mb-4">
+        <h2 className="terminal-title mb-3">
           Holdings
         </h2>
         <HoldingsList />
       </div>
 
       <div>
-        <h2 className="text-[15px] font-bold text-primary dark:text-primary-dark mb-4">
+        <h2 className="terminal-title mb-3">
           Orders
         </h2>
         <OrdersHistory />

@@ -134,19 +134,19 @@ function FnoPageContent() {
   };
 
   return (
-    <div className="px-4 md:px-6 py-6 max-w-7xl mx-auto space-y-5">
+    <div className="terminal-shell min-h-full px-3 py-3 md:px-4 space-y-4">
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2.5 mb-1">
-            <div className="w-8 h-8 rounded-lg bg-accent/10 dark:bg-accent/[0.12] flex items-center justify-center">
+            <div className="flex h-8 w-8 items-center justify-center rounded-sm border border-amber-400/20 bg-amber-400/10">
               <CandlestickChart size={17} className="text-accent" strokeWidth={2.2} />
             </div>
-            <h1 className="text-xl font-bold text-primary dark:text-primary-dark">
+            <h1 className="terminal-title text-sm">
               Futures & Options
             </h1>
           </div>
-          <p className="text-[13px] text-secondary dark:text-secondary-dark ml-[42px]">
+          <p className="terminal-subtle ml-[42px] text-[12px]">
             Paper trade F&O with virtual margin
           </p>
         </div>
@@ -158,7 +158,7 @@ function FnoPageContent() {
         <div className="relative">
           <button
             onClick={() => setShowUnderlyingSelect(!showUnderlyingSelect)}
-            className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-border dark:border-border-dark bg-card dark:bg-card-dark hover:border-accent/40 transition-all"
+            className="terminal-badge flex items-center gap-2 rounded-sm px-3.5 py-2.5 transition-colors hover:border-[color:var(--terminal-accent)]"
           >
             <span className="w-8 h-8 rounded-md bg-accent/10 flex items-center justify-center text-accent text-2xs font-bold">
               {underlying.ticker.slice(0, 2)}
@@ -204,7 +204,7 @@ function FnoPageContent() {
 
         {/* Spot Price */}
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold tabular-nums text-primary dark:text-primary-dark">
+          <span className="terminal-number terminal-fg text-2xl font-bold">
             {formatCurrency(spotPrice)}
           </span>
           <span className={cn(
@@ -239,13 +239,13 @@ function FnoPageContent() {
       )}
 
       {/* Tabs */}
-      <div className="flex items-center gap-4 border-b border-border dark:border-border-dark">
+      <div className="flex items-center gap-4 border-b border-[color:var(--terminal-border)]">
         {TABS.map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={cn(
-              "pb-2 text-[13px] font-bold border-b transition-colors -mb-px",
+              "border-b pb-2 text-[12px] font-bold uppercase tracking-[0.08em] transition-colors -mb-px",
               activeTab === tab
                 ? "border-accent text-accent"
                 : "border-transparent text-muted dark:text-muted-dark hover:text-primary dark:hover:text-primary-dark"
@@ -282,7 +282,7 @@ function FnoPageContent() {
           </div>
 
           {/* Option Chain Table */}
-          <div className="rounded-xl border border-border dark:border-border-dark bg-card dark:bg-card-dark overflow-x-auto">
+        <div className="terminal-panel overflow-x-auto">
             <table className="w-full text-[11px]">
               <thead>
                 <tr className="border-b border-border dark:border-border-dark bg-surface/50 dark:bg-elevated-dark/50">

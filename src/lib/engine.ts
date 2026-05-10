@@ -18,6 +18,7 @@ import {
 } from "@/lib/types";
 import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import { getMarketStatus, type MarketSegment } from "@/lib/market-hours";
+import { estimateTradeCharges } from "@/lib/trading-charges";
 
 // ─── In-Memory Database ─────────────────────────────────────
 interface Database {
@@ -103,7 +104,7 @@ export interface VirtualPortfolioManager {
   getPositions(): Position[];
   getPosition(ticker: string): Position | undefined;
   removeHolding(positionId: string): { success: boolean; message: string };
-  updatePositionLTP(ticker: string, ltp: number): void;
+  updatePositionLTP(ticker: string, ltp: number): boolean;
   getPortfolioSummary(): PortfolioSummary;
 
   // Transactions
@@ -123,6 +124,10 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     saveDb(database);
   }
 
+  function roundMoney(value: number): number {
+    return parseFloat(value.toFixed(2));
+  }
+
   function getOrderSegment(ticker: string): MarketSegment {
     if (commodityTickers.has(ticker)) return "commodity";
 
@@ -138,6 +143,12 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     return database.orders
       .filter((o) => o.status === "PENDING" && o.type === "SELL" && o.ticker === ticker && o.product === product)
       .reduce((sum, o) => sum + o.quantity, 0);
+  }
+
+  function getHeldQty(ticker: string, product: string): number {
+    return database.positions
+      .filter((p) => p.ticker === ticker && p.product === product)
+      .reduce((sum, p) => sum + p.quantity, 0);
   }
 
   function getPendingStatusNote(order: Pick<Order, "type" | "variety" | "price">, marketOpen: boolean): string {
@@ -160,9 +171,22 @@ export function createPortfolioManager(): VirtualPortfolioManager {
   }
 
   function validateOrder(req: OrderRequest, includeBuffer = true): { ok: true } | { ok: false; message: string } {
-    const totalCost = req.price * req.quantity;
-    const buffer = includeBuffer ? totalCost * API_CONFIG.orderBuffer : 0;
+    if (!Number.isFinite(req.price) || req.price <= 0) {
+      return { ok: false, message: "Invalid order price." };
+    }
+    if (!Number.isInteger(req.quantity) || req.quantity <= 0) {
+      return { ok: false, message: "Quantity must be a whole number greater than 0." };
+    }
+
     const segment = getOrderSegment(req.ticker);
+    const charges = estimateTradeCharges({
+      type: req.type,
+      product: req.product,
+      price: req.price,
+      quantity: req.quantity,
+      segment,
+    });
+    const buffer = includeBuffer && req.type === "BUY" ? charges.netAmount * API_CONFIG.orderBuffer : 0;
 
     if (segment === "fno") {
       const lotSize = req.lot_size ?? 0;
@@ -181,21 +205,18 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     }
 
     if (req.type === "BUY") {
-      if (database.user.virtual_balance < totalCost + buffer) {
+      if (database.user.virtual_balance < charges.netAmount + buffer) {
         return {
           ok: false,
-          message: `Insufficient virtual funds. Required: ₹${(totalCost + buffer).toFixed(2)}, Available: ₹${database.user.virtual_balance.toFixed(2)}`,
+          message: `Insufficient virtual funds. Required: ₹${(charges.netAmount + buffer).toFixed(2)}, Available: ₹${database.user.virtual_balance.toFixed(2)}`,
         };
       }
     }
 
     if (req.type === "SELL") {
-      const position = database.positions.find(
-        (p) => p.ticker === req.ticker && p.product === req.product
-      );
       const lockedQty = getPendingSellLockedQty(req.ticker, req.product);
-      const availableQty = (position?.quantity ?? 0) - lockedQty;
-      if (!position || availableQty < req.quantity) {
+      const availableQty = getHeldQty(req.ticker, req.product) - lockedQty;
+      if (availableQty < req.quantity) {
         return {
           ok: false,
           message: `Insufficient holdings. Available: ${Math.max(availableQty, 0)} shares of ${req.ticker}`,
@@ -206,34 +227,86 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     return { ok: true };
   }
 
+  function reduceSellPositions(order: Order): boolean {
+    let remaining = order.quantity;
+    const candidates = database.positions
+      .map((position, index) => ({ position, index }))
+      .filter(({ position }) => position.ticker === order.ticker && position.product === order.product)
+      .sort((a, b) => {
+        const aSameStrategy = a.position.strategy_tag === order.strategy_tag ? 0 : 1;
+        const bSameStrategy = b.position.strategy_tag === order.strategy_tag ? 0 : 1;
+        return aSameStrategy - bSameStrategy || a.index - b.index;
+      });
+
+    const totalAvailable = candidates.reduce((sum, { position }) => sum + position.quantity, 0);
+    if (totalAvailable < order.quantity) return false;
+
+    for (const { position } of candidates) {
+      if (remaining <= 0) break;
+
+      const exitQty = Math.min(position.quantity, remaining);
+      const nextQty = position.quantity - exitQty;
+      remaining -= exitQty;
+
+      if (nextQty <= 0) {
+        position.quantity = 0;
+        continue;
+      }
+
+      position.quantity = nextQty;
+      position.invested = roundMoney(position.avg_price * nextQty);
+      position.current_value = roundMoney(position.ltp * nextQty);
+      position.pnl = roundMoney(position.current_value - position.invested);
+      position.pnl_percent = position.invested > 0
+        ? roundMoney((position.pnl / position.invested) * 100)
+        : 0;
+    }
+
+    database.positions = database.positions.filter((position) => position.quantity > 0);
+    return remaining === 0;
+  }
+
   function applyExecution(order: Order, executedPrice: number, executedAt: Date) {
-    const totalCost = executedPrice * order.quantity;
+    const charges = estimateTradeCharges({
+      type: order.type,
+      product: order.product,
+      price: executedPrice,
+      quantity: order.quantity,
+      segment: order.segment ?? getOrderSegment(order.ticker),
+    });
+    const turnover = charges.turnover;
 
     if (order.type === "BUY") {
       const reserved = order.reserved_amount ?? 0;
       if (reserved > 0) {
-        if (totalCost > reserved) {
-          const extra = totalCost - reserved;
+        if (charges.netAmount > reserved) {
+          const extra = charges.netAmount - reserved;
           if (database.user.virtual_balance < extra) {
             database.user.virtual_balance += reserved;
             order.status = "REJECTED";
             order.status_note = "Rejected at open: insufficient funds at opening price";
             return false;
           }
-          database.user.virtual_balance -= extra;
-        } else if (reserved > totalCost) {
-          database.user.virtual_balance += (reserved - totalCost);
+          database.user.virtual_balance = roundMoney(database.user.virtual_balance - extra);
+        } else if (reserved > charges.netAmount) {
+          database.user.virtual_balance = roundMoney(database.user.virtual_balance + (reserved - charges.netAmount));
         }
       } else {
-        if (database.user.virtual_balance < totalCost) {
+        if (database.user.virtual_balance < charges.netAmount) {
           order.status = "REJECTED";
           order.status_note = "Rejected: insufficient funds";
           return false;
         }
-        database.user.virtual_balance -= totalCost;
+        database.user.virtual_balance = roundMoney(database.user.virtual_balance - charges.netAmount);
       }
     } else {
-      database.user.virtual_balance += totalCost;
+      const reduced = reduceSellPositions(order);
+      if (!reduced) {
+        order.status = "REJECTED";
+        order.status_note = "Rejected: insufficient holdings";
+        return false;
+      }
+      database.user.virtual_balance = roundMoney(database.user.virtual_balance + charges.netAmount);
     }
 
     const existingIdx = database.positions.findIndex(
@@ -244,68 +317,60 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       if (existingIdx >= 0) {
         const existing = database.positions[existingIdx];
         const newQty = existing.quantity + order.quantity;
-        const newAvg =
-          (existing.avg_price * existing.quantity + executedPrice * order.quantity) / newQty;
+        const invested = roundMoney(existing.invested + charges.netAmount);
+        const newAvg = invested / newQty;
+        const currentValue = roundMoney(executedPrice * newQty);
+        const pnl = roundMoney(currentValue - invested);
         database.positions[existingIdx] = {
           ...existing,
-          avg_price: parseFloat(newAvg.toFixed(2)),
+          avg_price: roundMoney(newAvg),
           quantity: newQty,
-          invested: parseFloat((newAvg * newQty).toFixed(2)),
-          current_value: parseFloat((existing.ltp * newQty).toFixed(2)),
-          pnl: parseFloat(((existing.ltp - newAvg) * newQty).toFixed(2)),
-          pnl_percent: parseFloat((((existing.ltp - newAvg) / newAvg) * 100).toFixed(2)),
+          invested,
+          current_value: currentValue,
+          pnl,
+          pnl_percent: invested > 0 ? roundMoney((pnl / invested) * 100) : 0,
+          ltp: roundMoney(executedPrice),
         };
       } else {
         database.positions.push({
           id: generateId(),
           ticker: order.ticker,
           stockName: order.stockName,
-          avg_price: executedPrice,
+          avg_price: roundMoney(charges.netAmount / order.quantity),
           quantity: order.quantity,
-          invested: totalCost,
-          current_value: totalCost,
-          pnl: 0,
-          pnl_percent: 0,
+          invested: charges.netAmount,
+          current_value: turnover,
+          pnl: roundMoney(turnover - charges.netAmount),
+          pnl_percent: charges.netAmount > 0 ? roundMoney(((turnover - charges.netAmount) / charges.netAmount) * 100) : 0,
           day_pnl: 0,
           day_pnl_percent: 0,
           strategy_tag: order.strategy_tag,
           product: order.product,
-          ltp: executedPrice,
+          ltp: roundMoney(executedPrice),
           lot_size: order.lot_size,
         });
-      }
-    } else if (existingIdx >= 0) {
-      const existing = database.positions[existingIdx];
-      const newQty = existing.quantity - order.quantity;
-      if (newQty <= 0) {
-        database.positions.splice(existingIdx, 1);
-      } else {
-        database.positions[existingIdx] = {
-          ...existing,
-          quantity: newQty,
-          invested: parseFloat((existing.avg_price * newQty).toFixed(2)),
-          current_value: parseFloat((existing.ltp * newQty).toFixed(2)),
-          pnl: parseFloat(((existing.ltp - existing.avg_price) * newQty).toFixed(2)),
-          pnl_percent: parseFloat(
-            (((existing.ltp - existing.avg_price) / existing.avg_price) * 100).toFixed(2)
-          ),
-        };
       }
     }
 
     order.status = "COMPLETED";
-    order.executed_price = parseFloat(executedPrice.toFixed(2));
+    order.executed_price = roundMoney(executedPrice);
     order.executed_at = executedAt;
     order.status_note = "Executed";
+    order.charges = charges.total;
+    order.gross_total = turnover;
+    order.net_total = charges.netAmount;
 
     const transaction: Transaction = {
       id: order.id,
       type: order.type,
       ticker: order.ticker,
       stockName: order.stockName,
-      price: parseFloat(executedPrice.toFixed(2)),
+      price: roundMoney(executedPrice),
       quantity: order.quantity,
-      total: parseFloat(totalCost.toFixed(2)),
+      total: charges.netAmount,
+      charges: charges.total,
+      gross_total: turnover,
+      net_total: charges.netAmount,
       strategy_tag: order.strategy_tag,
       product: order.product,
       status: "COMPLETED",
@@ -347,14 +412,29 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
       const now = new Date();
       const segment = getOrderSegment(req.ticker);
+      const estimatedCharges = estimateTradeCharges({
+        type: req.type,
+        product: req.product,
+        price: req.price,
+        quantity: req.quantity,
+        segment,
+      });
       const marketOpen = getMarketStatus(segment).isOpen;
-      const marketPrice = req.market_ltp && req.market_ltp > 0 ? req.market_ltp : req.price;
+      const livePrice = Number(req.market_ltp);
+      const hasLivePrice = Number.isFinite(livePrice) && livePrice > 0;
+      const marketPrice = hasLivePrice ? livePrice : 0;
 
       let executeNow = false;
       if (marketOpen) {
         if (req.variety === "MARKET") {
+          if (!hasLivePrice) {
+            return {
+              success: false,
+              message: "Live market price is required for market orders.",
+            };
+          }
           executeNow = true;
-        } else {
+        } else if (hasLivePrice) {
           executeNow = isLimitTriggered(req.type, req.price, marketPrice);
         }
       }
@@ -368,24 +448,25 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         queued_at: executeNow ? undefined : now,
         status_note: executeNow
           ? "Executed"
-          : marketOpen
+          : marketOpen && req.variety === "LIMIT"
             ? `Limit pending: waiting for ${req.type === "BUY" ? "price <=" : "price >="} ₹${req.price.toFixed(2)}`
             : "Queued: waiting for market open",
         lot_size: req.lot_size,
+        charges: estimatedCharges.total,
+        gross_total: estimatedCharges.turnover,
+        net_total: estimatedCharges.netAmount,
       };
 
       if (!executeNow && req.type === "BUY") {
-        const reserve = parseFloat((req.price * req.quantity).toFixed(2));
+        const reserve = estimatedCharges.netAmount;
         order.reserved_amount = reserve;
-        database.user.virtual_balance -= reserve;
+        database.user.virtual_balance = roundMoney(database.user.virtual_balance - reserve);
       }
 
       database.orders.push(order);
 
       if (executeNow) {
-        const executionPrice = req.variety === "LIMIT"
-          ? marketPrice
-          : marketPrice;
+        const executionPrice = marketPrice;
         const executed = applyExecution(order, executionPrice, now);
         if (!executed) {
           persist();
@@ -398,7 +479,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         persist();
         return {
           success: true,
-          message: `${req.type} order executed: ${req.quantity} × ${req.ticker} @ ₹${executionPrice.toFixed(2)}`,
+          message: `${req.type} order executed: ${req.quantity} × ${req.ticker} @ ₹${executionPrice.toFixed(2)} including ₹${order.charges?.toFixed(2) ?? "0.00"} charges`,
           order,
         };
       }
@@ -427,7 +508,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       }
 
       if (order.type === "BUY" && (order.reserved_amount ?? 0) > 0) {
-        database.user.virtual_balance += order.reserved_amount ?? 0;
+        database.user.virtual_balance = roundMoney(database.user.virtual_balance + (order.reserved_amount ?? 0));
         order.reserved_amount = 0;
       }
 
@@ -459,22 +540,31 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
       if (order.type === "BUY") {
         const currentReserved = order.reserved_amount ?? 0;
-        const nextReserved = parseFloat((nextPrice * nextQty).toFixed(2));
+        const nextCharges = estimateTradeCharges({
+          type: order.type,
+          product: order.product,
+          price: nextPrice,
+          quantity: nextQty,
+          segment: order.segment ?? getOrderSegment(order.ticker),
+        });
+        const nextDebit = nextCharges.netAmount;
         const effectiveBalance = database.user.virtual_balance + currentReserved;
 
-        if (effectiveBalance < nextReserved) {
+        if (effectiveBalance < nextDebit) {
           return {
             success: false,
-            message: `Insufficient virtual funds. Required: ₹${nextReserved.toFixed(2)}, Available: ₹${effectiveBalance.toFixed(2)}`,
+            message: `Insufficient virtual funds. Required: ₹${nextDebit.toFixed(2)}, Available: ₹${effectiveBalance.toFixed(2)}`,
           };
         }
 
-        database.user.virtual_balance = parseFloat((effectiveBalance - nextReserved).toFixed(2));
-        order.reserved_amount = nextReserved;
+        database.user.virtual_balance = parseFloat((effectiveBalance - nextDebit).toFixed(2));
+        order.reserved_amount = nextDebit;
+        order.charges = nextCharges.total;
+        order.gross_total = nextCharges.turnover;
+        order.net_total = nextCharges.netAmount;
       }
 
       if (order.type === "SELL") {
-        const position = database.positions.find((p) => p.ticker === order.ticker && p.product === order.product);
         const lockedByOthers = database.orders
           .filter(
             (o) =>
@@ -485,9 +575,9 @@ export function createPortfolioManager(): VirtualPortfolioManager {
               o.product === order.product
           )
           .reduce((sum, o) => sum + o.quantity, 0);
-        const availableQty = (position?.quantity ?? 0) - lockedByOthers;
+        const availableQty = getHeldQty(order.ticker, order.product) - lockedByOthers;
 
-        if (!position || availableQty < nextQty) {
+        if (availableQty < nextQty) {
           return {
             success: false,
             message: `Insufficient holdings. Available: ${Math.max(availableQty, 0)} shares of ${order.ticker}`,
@@ -497,6 +587,18 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
       order.price = nextPrice;
       order.quantity = nextQty;
+      if (order.type === "SELL") {
+        const nextCharges = estimateTradeCharges({
+          type: order.type,
+          product: order.product,
+          price: nextPrice,
+          quantity: nextQty,
+          segment: order.segment ?? getOrderSegment(order.ticker),
+        });
+        order.charges = nextCharges.total;
+        order.gross_total = nextCharges.turnover;
+        order.net_total = nextCharges.netAmount;
+      }
       order.status_note = getPendingStatusNote(order, getMarketStatus(order.segment ?? getOrderSegment(order.ticker)).isOpen);
       persist();
       return {
@@ -539,8 +641,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
             const lockedByOthers = database.orders
               .filter((o) => o.id !== order.id && o.status === "PENDING" && o.type === "SELL" && o.ticker === order.ticker && o.product === order.product)
               .reduce((sum, o) => sum + o.quantity, 0);
-            const position = database.positions.find((p) => p.ticker === order.ticker && p.product === order.product);
-            if (!position || (position.quantity - lockedByOthers) < order.quantity) {
+            if ((getHeldQty(order.ticker, order.product) - lockedByOthers) < order.quantity) {
               order.status = "REJECTED";
               order.status_note = "Rejected at open: insufficient holdings";
               rejected += 1;
@@ -587,10 +688,16 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
       const position = database.positions[positionIdx];
       const exitPrice = position.ltp > 0 ? position.ltp : position.avg_price;
-      const total = parseFloat((exitPrice * position.quantity).toFixed(2));
+      const charges = estimateTradeCharges({
+        type: "SELL",
+        product: position.product,
+        price: exitPrice,
+        quantity: position.quantity,
+        segment: getOrderSegment(position.ticker),
+      });
       const now = new Date();
 
-      database.user.virtual_balance = parseFloat((database.user.virtual_balance + total).toFixed(2));
+      database.user.virtual_balance = parseFloat((database.user.virtual_balance + charges.netAmount).toFixed(2));
 
       const order: Order = {
         id: generateId(),
@@ -609,6 +716,9 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         segment: getOrderSegment(position.ticker),
         status_note: "Removed from holdings",
         lot_size: position.lot_size,
+        charges: charges.total,
+        gross_total: charges.turnover,
+        net_total: charges.netAmount,
       };
 
       const transaction: Transaction = {
@@ -618,7 +728,10 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         stockName: position.stockName,
         price: exitPrice,
         quantity: position.quantity,
-        total,
+        total: charges.netAmount,
+        charges: charges.total,
+        gross_total: charges.turnover,
+        net_total: charges.netAmount,
         strategy_tag: position.strategy_tag,
         product: position.product,
         status: "COMPLETED",
@@ -633,17 +746,20 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     },
 
     updatePositionLTP(ticker: string, ltp: number) {
+      let changed = false;
       database.positions.forEach((p) => {
-        if (p.ticker === ticker) {
+        if (p.ticker === ticker && p.ltp !== ltp) {
           p.ltp = ltp;
           p.current_value = parseFloat((ltp * p.quantity).toFixed(2));
           p.pnl = parseFloat(((ltp - p.avg_price) * p.quantity).toFixed(2));
           p.pnl_percent = parseFloat(
             (((ltp - p.avg_price) / p.avg_price) * 100).toFixed(2)
           );
+          changed = true;
         }
       });
-      persist();
+      if (changed) persist();
+      return changed;
     },
 
     getPortfolioSummary(): PortfolioSummary {

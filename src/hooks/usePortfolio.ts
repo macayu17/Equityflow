@@ -123,8 +123,9 @@ export function usePortfolio() {
 
   const updateLTP = useCallback(
     (ticker: string, ltp: number) => {
-      manager.updatePositionLTP(ticker, ltp);
-      emitChange();
+      if (manager.updatePositionLTP(ticker, ltp)) {
+        emitChange();
+      }
     },
     [manager]
   );
@@ -213,7 +214,7 @@ export function useTheme() {
 
   useEffect(() => {
     const stored = localStorage.getItem("equityflow_theme");
-    const isDark = stored === "dark";
+    const isDark = stored ? stored === "dark" : true;
     setDark(isDark);
     document.documentElement.classList.toggle("dark", isDark);
   }, []);

@@ -13,6 +13,7 @@ interface StockListItem {
   name: string;
   exchange: string;
   sector: string;
+  logoUrl?: string;
   ltp: number;
   change: number;
   changePercent: number;
@@ -77,11 +78,11 @@ export default function StocksPage() {
   });
 
   return (
-    <div className="px-4 md:px-6 py-6 max-w-7xl mx-auto space-y-6">
+    <div className="terminal-shell min-h-full px-3 py-3 md:px-4 space-y-4">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-bold text-primary dark:text-primary-dark">Stocks</h1>
-          <p className="text-sm text-secondary dark:text-secondary-dark">
+          <h1 className="terminal-title text-sm">Stocks</h1>
+          <p className="terminal-subtle text-xs">
             Browse and trade {stocks.length} NSE stocks
             {connected && (
               <span className="ml-2 inline-flex items-center gap-1 text-xs px-1.5 py-0.5 bg-accent/[0.08] text-accent rounded-md">
@@ -103,7 +104,7 @@ export default function StocksPage() {
           <button
             onClick={fetchStocks}
             disabled={loading}
-            className="p-2 rounded-md hover:bg-surface dark:hover:bg-elevated-dark transition-colors text-muted dark:text-muted-dark"
+            className="terminal-badge rounded-sm p-2 transition-colors hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]"
             title="Refresh"
           >
             <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
@@ -122,7 +123,7 @@ export default function StocksPage() {
             placeholder="Search stocks..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full h-10 pl-9 pr-4 rounded-lg border border-border dark:border-border-dark bg-card dark:bg-card-dark text-sm text-primary dark:text-primary-dark outline-none focus:border-accent/50 focus:shadow-xs transition-all"
+            className="terminal-input h-9 w-full rounded-sm pl-9 pr-4 font-mono text-xs outline-none transition-colors focus:border-[color:var(--terminal-accent)]"
           />
         </div>
 
@@ -133,10 +134,10 @@ export default function StocksPage() {
               key={s}
               onClick={() => setSector(s)}
               className={cn(
-                "px-3 py-2 text-xs font-semibold rounded-lg whitespace-nowrap transition-all duration-150",
+                "rounded-sm px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.05em] whitespace-nowrap transition-colors duration-150",
                 sector === s
-                  ? "bg-accent text-white shadow-xs"
-                  : "bg-surface dark:bg-elevated-dark text-secondary dark:text-secondary-dark hover:text-primary dark:hover:text-primary-dark"
+                  ? "bg-amber-400 text-black"
+                  : "terminal-badge hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]"
               )}
             >
               {s}
@@ -145,14 +146,14 @@ export default function StocksPage() {
         </div>
 
         {/* View Toggle */}
-        <div className="flex gap-1 p-1 rounded-lg bg-surface dark:bg-elevated-dark">
+        <div className="terminal-badge flex gap-1 rounded-sm p-1">
           <button
             onClick={() => setView("grid")}
             className={cn(
               "p-2 rounded-md transition-all",
               view === "grid"
-                ? "bg-card dark:bg-card-dark text-accent shadow-soft"
-                : "text-muted dark:text-muted-dark hover:text-primary dark:hover:text-primary-dark"
+                ? "bg-amber-400 text-black"
+                : "terminal-subtle hover:text-[var(--terminal-accent)]"
             )}
           >
             <Grid3X3 size={16} />
@@ -162,8 +163,8 @@ export default function StocksPage() {
             className={cn(
               "p-2 rounded-md transition-all",
               view === "list"
-                ? "bg-card dark:bg-card-dark text-accent shadow-soft"
-                : "text-muted dark:text-muted-dark hover:text-primary dark:hover:text-primary-dark"
+                ? "bg-amber-400 text-black"
+                : "terminal-subtle hover:text-[var(--terminal-accent)]"
             )}
           >
             <List size={16} />
@@ -172,23 +173,24 @@ export default function StocksPage() {
       </div>
 
       {/* Results */}
-      <div className="text-xs text-muted dark:text-muted-dark">
+      <div className="terminal-subtle font-mono text-[11px] uppercase tracking-[0.1em]">
         {filtered.length} stocks found
       </div>
 
       {view === "grid" ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((stock) => (
-            <StockCard key={stock.ticker} ticker={stock.ticker} name={stock.name} />
+            <StockCard key={stock.ticker} ticker={stock.ticker} name={stock.name} logoUrl={stock.logoUrl} />
           ))}
         </div>
       ) : (
-        <div className="rounded-xl border border-border dark:border-border-dark bg-card dark:bg-card-dark divide-y divide-border/40 dark:divide-border-dark/40 overflow-hidden">
+        <div className="terminal-panel divide-y divide-white/5 overflow-hidden">
           {filtered.map((stock) => (
             <StockCard
               key={stock.ticker}
               ticker={stock.ticker}
               name={stock.name}
+              logoUrl={stock.logoUrl}
               compact
             />
           ))}

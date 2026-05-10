@@ -179,7 +179,12 @@ export function OrdersHistory() {
                   className="w-24 ml-auto px-2 py-1 rounded-md border border-border dark:border-border-dark bg-card dark:bg-card-dark text-xs text-right"
                 />
               ) : (
-                formatCurrency(o.price)
+                <>
+                  <div>{formatCurrency(o.price)}</div>
+                  {(o.charges ?? 0) > 0 && (
+                    <div className="text-[10px] text-muted dark:text-muted-dark">chg {formatCurrency(o.charges ?? 0)}</div>
+                  )}
+                </>
               )}
             </div>
             <div className="col-span-2 text-right text-xs font-medium text-primary dark:text-primary-dark">

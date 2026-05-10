@@ -6,8 +6,10 @@ import { X } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { usePortfolio, useIsMobile } from "@/hooks/usePortfolio";
 import { useToast } from "@/components/toast-provider";
+import { StockLogo } from "@/components/market/stock-logo";
 import type { OrderType, OrderVariety, ProductType, StrategyTag } from "@/lib/types";
 import { STRATEGY_TAGS } from "@/lib/types";
+import { estimateTradeCharges } from "@/lib/trading-charges";
 
 interface OrderPadProps {
   open: boolean;
@@ -19,6 +21,7 @@ interface OrderPadProps {
   defaultProduct?: ProductType;
   defaultStrategyTag?: StrategyTag;
   lotSize?: number; // F&O lot size (1 for equities, >1 for F&O)
+  defaultQuantity?: number;
 }
 
 export function OrderPad({
@@ -31,6 +34,7 @@ export function OrderPad({
   defaultProduct,
   defaultStrategyTag = "Manual",
   lotSize = 1,
+  defaultQuantity = 1,
 }: OrderPadProps) {
   const { balance, placeOrder } = usePortfolio();
   const { toast } = useToast();
@@ -46,20 +50,40 @@ export function OrderPad({
 
   useEffect(() => {
     if (!open) return;
+    const initialQuantity = isFnO ? Math.max(1, Math.ceil(defaultQuantity / lotSize)) : Math.max(1, defaultQuantity);
     setOrderType(defaultType);
     setProduct(defaultProduct ?? (isFnO ? "INTRADAY" : "DELIVERY"));
     setStrategyTag(defaultStrategyTag);
     setVariety("MARKET");
-    setQuantity(1);
+    setQuantity(initialQuantity);
     setLimitPrice(ltp);
-  }, [open, ticker, ltp, defaultType, defaultProduct, defaultStrategyTag, isFnO]);
+  }, [open, ticker, ltp, defaultType, defaultProduct, defaultStrategyTag, isFnO, defaultQuantity, lotSize]);
 
   const effectivePrice = variety === "MARKET" ? ltp : limitPrice;
   const totalQuantity = isFnO ? quantity * lotSize : quantity;
-  const totalCost = effectivePrice * totalQuantity;
   const isBuy = orderType === "BUY";
+  const charges = estimateTradeCharges({
+    type: orderType,
+    product,
+    price: effectivePrice,
+    quantity: totalQuantity,
+    segment: isFnO ? "fno" : "equity",
+  });
+  const hasValidOrder = effectivePrice > 0 && totalQuantity > 0;
 
   const handleSubmit = () => {
+    if (!hasValidOrder || (isBuy && balance < charges.netAmount)) {
+      const insufficientFunds = isBuy && hasValidOrder && balance < charges.netAmount;
+      toast({
+        title: insufficientFunds ? "Insufficient Funds" : "Price Required",
+        description: insufficientFunds
+          ? `Required ${formatCurrency(charges.netAmount)}, available ${formatCurrency(balance)}.`
+          : "Order entry needs a valid executable price.",
+        variant: "error",
+      });
+      return;
+    }
+
     if (quantity <= 0) {
       toast({
         title: "Invalid Quantity",
@@ -110,20 +134,26 @@ export function OrderPad({
             isMobile
               ? "bottom-0 left-0 right-0 rounded-t-xl max-h-[85vh] overflow-y-auto animate-slide-up shadow-modal"
               : "top-0 right-0 h-full w-[400px] border-l border-border dark:border-border-dark animate-slide-right shadow-elevated"
-          )}
+            )}
         >
+          <Dialog.Title className="sr-only">
+            {orderType} order ticket for {ticker}
+          </Dialog.Title>
           {/* Header */}
           <div className={cn(
             "flex items-center justify-between px-5 py-3.5 border-b border-border dark:border-border-dark",
             isBuy ? "bg-profit/[0.03]" : "bg-loss/[0.03]"
           )}>
-            <div>
+            <div className="flex min-w-0 items-center gap-3">
+              <StockLogo ticker={ticker} className="h-9 w-9 flex-shrink-0 rounded-sm" textClassName="text-[9px]" />
+              <div className="min-w-0">
               <div className="text-[13px] font-semibold text-primary dark:text-primary-dark">
                 {stockName}
               </div>
               <div className="text-[11px] text-muted dark:text-muted-dark">
                 {ticker} · NSE · {formatCurrency(ltp)}
                 {isFnO && <span className="ml-1 text-accent font-medium">· Lot {lotSize}</span>}
+              </div>
               </div>
             </div>
             <Dialog.Close className="p-1 rounded-md hover:bg-surface dark:hover:bg-elevated-dark transition-colors">
@@ -309,16 +339,22 @@ export function OrderPad({
                   {formatCurrency(effectivePrice)} × {totalQuantity.toLocaleString("en-IN")}
                 </span>
               </div>
+              <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+                <span>Est. charges</span>
+                <span className="text-primary dark:text-primary-dark font-medium tabular-nums">
+                  {formatCurrency(charges.total)}
+                </span>
+              </div>
               <div className="flex justify-between text-[12px]">
-                <span className="text-muted dark:text-muted-dark">Total</span>
+                <span className="text-muted dark:text-muted-dark">{isBuy ? "Debit" : "Credit"}</span>
                 <span className="text-primary dark:text-primary-dark font-semibold tabular-nums">
-                  {formatCurrency(totalCost)}
+                  {formatCurrency(charges.netAmount)}
                 </span>
               </div>
               {isBuy && (
                 <div className="flex justify-between text-[11px] pt-1.5 border-t border-border dark:border-border-dark">
                   <span className="text-muted dark:text-muted-dark">Available</span>
-                  <span className={cn("font-medium tabular-nums", balance >= totalCost ? "text-profit" : "text-loss")}>
+                  <span className={cn("font-medium tabular-nums", balance >= charges.netAmount ? "text-profit" : "text-loss")}>
                     {formatCurrency(balance)}
                   </span>
                 </div>
@@ -328,8 +364,9 @@ export function OrderPad({
             {/* Submit */}
             <button
               onClick={handleSubmit}
+              disabled={!hasValidOrder}
               className={cn(
-                "w-full py-2.5 rounded-md text-[13px] font-semibold text-white transition-all active:scale-[0.98]",
+                "w-full py-2.5 rounded-md text-[13px] font-semibold text-white transition-all active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45",
                 isBuy
                   ? "bg-profit hover:bg-profit/90"
                   : "bg-loss hover:bg-loss/90"

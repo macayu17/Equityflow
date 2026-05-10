@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { getStockLogoUrls } from "@/lib/stock-logos";
 
@@ -37,11 +38,13 @@ export function StockLogo({ ticker, logoUrl, className, textClassName }: StockLo
 
   return (
     <div className={cn("rounded-lg bg-white dark:bg-card-dark overflow-hidden border border-border/50 dark:border-border-dark/60", className)}>
-      <img
+      <Image
         src={resolvedLogoUrl}
         alt={`${ticker} logo`}
+        width={48}
+        height={48}
+        unoptimized={resolvedLogoUrl.includes("google.com/s2/favicons")}
         className="w-full h-full object-contain"
-        loading="lazy"
         onError={() => setLogoIndex((current) => current + 1)}
       />
     </div>

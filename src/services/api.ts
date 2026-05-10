@@ -37,8 +37,8 @@ async function apiPost<T>(path: string, body: unknown): Promise<T | null> {
 }
 
 // â”€â”€â”€ API Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export async function getApiStatus(): Promise<{ connected: boolean; reason?: string }> {
-  const data = await apiFetch<{ connected: boolean; reason?: string }>("/api/status");
+export async function getApiStatus(): Promise<ApiStatus> {
+  const data = await apiFetch<ApiStatus>("/api/status");
   return data ?? { connected: false, reason: "Backend offline" };
 }
 
@@ -107,9 +107,41 @@ export interface StockListItem {
   logoUrl?: string;
 }
 
+export interface ApiStatus {
+  connected: boolean;
+  reason?: string;
+  auth_mode?: string;
+  degraded_reason?: string;
+  rate_limited_for_sec?: number;
+  last_error?: Record<string, unknown>;
+  last_success_at?: string | null;
+}
+
+export interface WorkstationSnapshot {
+  prices: Record<string, { ltp: number; change: number; changePercent: number; name?: string }>;
+  commodities: Record<string, { ltp: number; change: number; changePercent: number; name?: string }>;
+  indices: MarketIndex[];
+  depth: MarketDepth | null;
+  status: ApiStatus;
+  ts: string;
+}
+
 export async function getStockList(): Promise<StockListItem[]> {
   const apiData = await apiFetch<StockListItem[]>("/api/stocks");
   return apiData ?? [];
+}
+
+export async function getWorkstationSnapshot(
+  symbols: string[] = [],
+  depthSymbol?: string
+): Promise<WorkstationSnapshot | null> {
+  const params = new URLSearchParams({
+    commodities: "true",
+    indices: "true",
+  });
+  if (symbols.length > 0) params.set("symbols", symbols.join(","));
+  if (depthSymbol) params.set("depth_symbol", depthSymbol);
+  return apiFetch<WorkstationSnapshot>(`/api/workstation/snapshot?${params.toString()}`);
 }
 
 // â”€â”€â”€ Trending / Top Stocks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

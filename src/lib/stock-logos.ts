@@ -14,7 +14,6 @@ export function getStockLogoUrls(ticker: string, preferredLogoUrl?: string): str
     preferredLogoUrl,
     growwWebp,
     growwPng,
-    `https://www.google.com/s2/favicons?domain=${ticker.toLowerCase()}.com&sz=128`,
   ].filter((u): u is string => !!u);
 
   return Array.from(new Set(urls));

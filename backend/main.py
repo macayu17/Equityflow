@@ -1,4 +1,4 @@
-﻿"""
+"""
 EquityFlow â€” FastAPI Backend
 Official Groww Trade API integration (https://api.groww.in/v1/).
 
@@ -59,7 +59,21 @@ def _parse_cors_origins() -> list[str]:
         "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
+        "http://localhost:3003",
+        "http://127.0.0.1:3003",
     ]
+
+
+def _cors_origin_regex() -> str | None:
+    """Allow arbitrary local dev ports unless explicitly disabled."""
+    raw = os.getenv("CORS_ALLOW_ORIGIN_REGEX", "").strip()
+    if raw:
+        return raw
+    if os.getenv("ENV", "development").lower() != "production":
+        return r"^http://(localhost|127\.0\.0\.1):\d{2,5}$"
+    return None
 
 
 def _validate_startup_env() -> None:
@@ -148,6 +162,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_parse_cors_origins(),
+    allow_origin_regex=_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -240,6 +255,7 @@ _token_cache = {"token": "", "expiry": None, "source": ""}
 _groww_rate_limited_until: float = 0.0
 _groww_last_429_log_at: float = 0.0
 _groww_last_error: dict = {}
+_groww_last_success_at: str | None = None
 _groww_disable_access_token: bool = False
 
 # â”€â”€â”€ Persistent httpx client (connection pooling, avoids TLS handshake per call) â”€â”€
@@ -643,7 +659,7 @@ MOCK_STOCKS = {
 
 async def _groww_get(path: str, params: dict | None = None) -> dict | None:
     """Make an authenticated GET request to Groww Trade API via persistent client."""
-    global _groww_rate_limited_until, _groww_last_429_log_at, _groww_last_error, _groww_disable_access_token
+    global _groww_rate_limited_until, _groww_last_429_log_at, _groww_last_error, _groww_last_success_at, _groww_disable_access_token
 
     now_ts = time.time()
     if now_ts < _groww_rate_limited_until:
@@ -675,6 +691,7 @@ async def _groww_get(path: str, params: dict | None = None) -> dict | None:
             data = res.json()
             if data.get("status") == "SUCCESS":
                 _groww_last_error = {}
+                _groww_last_success_at = datetime.now(IST).isoformat()
                 return data.get("payload", data)
             if data.get("status") == "FAILURE":
                 err = data.get("error", {})
@@ -717,6 +734,7 @@ async def _groww_get(path: str, params: dict | None = None) -> dict | None:
                     data2 = res2.json()
                     if data2.get("status") == "SUCCESS":
                         _groww_last_error = {}
+                        _groww_last_success_at = datetime.now(IST).isoformat()
                         return data2.get("payload", data2)
                     _groww_last_error = {
                         "type": "api_failure",
@@ -1089,33 +1107,46 @@ async def api_status():
     """Check if Groww API connection is working."""
     now_ts = time.time()
     cooldown_remaining = max(0, int(_groww_rate_limited_until - now_ts))
+    degraded_reason = ""
     if not _is_api_configured():
         if GROWW_ACCESS_TOKEN:
             return {
                 "connected": True,
                 "auth_mode": "access_token",
+                "degraded_reason": degraded_reason,
                 "rate_limited_for_sec": cooldown_remaining,
                 "last_error": _groww_last_error,
+                "last_success_at": _groww_last_success_at,
             }
+        degraded_reason = "Missing GROWW_API_KEY or GROWW_API_SECRET"
         return {
             "connected": False,
-            "reason": "Missing GROWW_API_KEY or GROWW_API_SECRET",
+            "reason": degraded_reason,
+            "degraded_reason": degraded_reason,
             "rate_limited_for_sec": cooldown_remaining,
             "last_error": _groww_last_error,
+            "last_success_at": _groww_last_success_at,
         }
     token = await _get_access_token()
     if token:
+        if cooldown_remaining > 0:
+            degraded_reason = f"Groww rate limited for {cooldown_remaining}s"
         return {
             "connected": True,
             "auth_mode": "api_key_secret" if GROWW_API_KEY and GROWW_API_SECRET else "access_token",
+            "degraded_reason": degraded_reason,
             "rate_limited_for_sec": cooldown_remaining,
             "last_error": _groww_last_error,
+            "last_success_at": _groww_last_success_at,
         }
+    degraded_reason = "Token exchange failed"
     return {
         "connected": False,
-        "reason": "Token exchange failed",
+        "reason": degraded_reason,
+        "degraded_reason": degraded_reason,
         "rate_limited_for_sec": cooldown_remaining,
         "last_error": _groww_last_error,
+        "last_success_at": _groww_last_success_at,
     }
 
 
@@ -2238,6 +2269,253 @@ _sse_ohlc_ts: float = 0              # OHLC only refreshed every 5 minutes
 _sse_ohlc_task = None
 
 
+def _parse_symbol_list(raw: str, fallback_count: int = 12) -> list[str]:
+    requested = [s.strip().upper() for s in (raw or "").split(",") if s.strip()]
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for symbol in requested:
+        normalized = symbol.replace("NSE_", "").replace("BSE_", "").strip()
+        if normalized in MOCK_STOCKS and normalized not in seen:
+            seen.add(normalized)
+            symbols.append(normalized)
+    if symbols:
+        return symbols[:50]
+    return list(MOCK_STOCKS.keys())[:fallback_count]
+
+
+def _build_price_payload(ticker: str, live_ltp: float, prev_close: float, name: str | None = None) -> dict:
+    change = round(float(live_ltp) - float(prev_close), 2)
+    change_pct = round((change / float(prev_close)) * 100, 2) if prev_close else 0.0
+    payload = {
+        "ltp": float(live_ltp),
+        "change": change,
+        "changePercent": change_pct,
+    }
+    if name:
+        payload["name"] = name
+    return payload
+
+
+async def _fetch_batch_ltp(segment: str, exchange_symbols: list[str]) -> dict:
+    if not exchange_symbols:
+        return {}
+    out: dict = {}
+    for i in range(0, len(exchange_symbols), 50):
+        batch = exchange_symbols[i:i + 50]
+        data = await _groww_get("/live-data/ltp", {
+            "segment": segment,
+            "exchange_symbols": ",".join(batch),
+        })
+        if isinstance(data, dict):
+            out.update(data)
+    return out
+
+
+async def _fetch_batch_ohlc(segment: str, exchange_symbols: list[str]) -> dict:
+    if not exchange_symbols:
+        return {}
+    out: dict = {}
+    for i in range(0, len(exchange_symbols), 50):
+        batch = exchange_symbols[i:i + 50]
+        data = await _groww_get("/live-data/ohlc", {
+            "segment": segment,
+            "exchange_symbols": ",".join(batch),
+        })
+        if isinstance(data, dict):
+            out.update(data)
+    return out
+
+
+def _extract_depth_payload(quote: dict | None) -> dict | None:
+    if not quote:
+        return None
+    raw_depth = quote.get("depth", {})
+    bids = []
+    asks = []
+    for bid in raw_depth.get("buy", []):
+        if bid.get("price", 0) > 0:
+            bids.append({
+                "price": float(bid.get("price", 0)),
+                "quantity": int(bid.get("quantity", 0)),
+                "orders": int(bid.get("orderCount", bid.get("orders", 0))),
+            })
+    for ask in raw_depth.get("sell", []):
+        if ask.get("price", 0) > 0:
+            asks.append({
+                "price": float(ask.get("price", 0)),
+                "quantity": int(ask.get("quantity", 0)),
+                "orders": int(ask.get("orderCount", ask.get("orders", 0))),
+            })
+    if not bids and not asks:
+        return None
+    return {
+        "bids": bids,
+        "asks": asks,
+        "totalBidQty": int(quote.get("total_buy_quantity", sum(b["quantity"] for b in bids)) or 0),
+        "totalAskQty": int(quote.get("total_sell_quantity", sum(a["quantity"] for a in asks)) or 0),
+    }
+
+
+async def _build_workstation_snapshot(
+    symbols: str = "",
+    include_commodities: bool = True,
+    include_indices: bool = True,
+    depth_symbol: str | None = None,
+) -> dict:
+    global _sse_groww_ohlc_cache, _sse_prev_close_cache, _sse_ohlc_ts
+
+    stock_tickers = _parse_symbol_list(symbols)
+    stock_symbols = [f"NSE_{ticker}" for ticker in stock_tickers]
+    ltp_data = await _fetch_batch_ltp("CASH", stock_symbols)
+    ohlc_data = {key: _sse_groww_ohlc_cache.get(key) for key in stock_symbols}
+    needs_ohlc = (time.time() - _sse_ohlc_ts) > 120 or any(v is None for v in ohlc_data.values())
+    if needs_ohlc:
+        fresh_ohlc = await _fetch_batch_ohlc("CASH", stock_symbols)
+        if fresh_ohlc:
+            _sse_groww_ohlc_cache.update(fresh_ohlc)
+            _sse_ohlc_ts = time.time()
+            for key, raw in fresh_ohlc.items():
+                close_val = _extract_prev_close(raw, 0)
+                if close_val > 0:
+                    _sse_prev_close_cache[key] = close_val
+            ohlc_data.update(fresh_ohlc)
+
+    prices: dict = {}
+    for ticker in stock_tickers:
+        key = f"NSE_{ticker}"
+        live_ltp = ltp_data.get(key)
+        if isinstance(live_ltp, (int, float)) and live_ltp > 0:
+            info = MOCK_STOCKS.get(ticker, {})
+            prev_close = _extract_prev_close(ohlc_data.get(key), float(live_ltp))
+            prices[ticker] = _build_price_payload(ticker, float(live_ltp), prev_close, info.get("name"))
+
+    commodities_payload: dict = {}
+    if include_commodities:
+        commodity_symbols = [
+            f"MCX_{c['ticker']}"
+            for c in MOCK_COMMODITIES
+            if c.get("category") != "Electricity"
+        ]
+        commodity_ltp = await _fetch_batch_ltp("COMMODITY", commodity_symbols)
+        commodity_ohlc = {key: _sse_groww_ohlc_cache.get(key) for key in commodity_symbols}
+        needs_commodity_ohlc = (time.time() - _sse_ohlc_ts) > 120 or any(v is None for v in commodity_ohlc.values())
+        if needs_commodity_ohlc:
+            fresh_commodity_ohlc = await _fetch_batch_ohlc("COMMODITY", commodity_symbols)
+            if fresh_commodity_ohlc:
+                _sse_groww_ohlc_cache.update(fresh_commodity_ohlc)
+                _sse_ohlc_ts = time.time()
+                for key, raw in fresh_commodity_ohlc.items():
+                    close_val = _extract_prev_close(raw, 0)
+                    if close_val > 0:
+                        _sse_prev_close_cache[key] = close_val
+                commodity_ohlc.update(fresh_commodity_ohlc)
+        for comm in MOCK_COMMODITIES:
+            ticker = comm["ticker"]
+            key = f"MCX_{ticker}"
+            live_ltp = commodity_ltp.get(key)
+            if isinstance(live_ltp, (int, float)) and live_ltp > 0:
+                prev_close = _extract_prev_close(commodity_ohlc.get(key), float(live_ltp))
+                commodities_payload[ticker] = _build_price_payload(
+                    ticker,
+                    float(live_ltp),
+                    prev_close,
+                    comm.get("name"),
+                )
+
+    indices_payload: list[dict] = []
+    if include_indices:
+        cash_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "CASH"]
+        comm_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "COMMODITY"]
+        cash_ltp, comm_ltp = await asyncio.gather(
+            _fetch_batch_ltp("CASH", cash_syms),
+            _fetch_batch_ltp("COMMODITY", comm_syms),
+        )
+        index_ltp = {**cash_ltp, **comm_ltp}
+        for name, info in MOCK_INDEX_DATA.items():
+            idx_info = INDEX_GROWW_SYMBOLS.get(name)
+            if not idx_info:
+                continue
+            cache_key = idx_info.get("resp_key", idx_info["sym"])
+            live_val = index_ltp.get(cache_key)
+            if isinstance(live_val, (int, float)) and live_val > 0:
+                base = float(info.get("base", live_val))
+                indices_payload.append({
+                    "name": name,
+                    "value": float(live_val),
+                    "change": round(float(live_val) - base, 2),
+                    "changePercent": round(((float(live_val) - base) / base) * 100, 2) if base else 0,
+                })
+
+    depth_payload = None
+    if depth_symbol:
+        depth_ticker = depth_symbol.upper().replace("NSE_", "").strip()
+        quote = await _groww_get("/live-data/quote", {
+            "exchange": "NSE",
+            "segment": "CASH",
+            "trading_symbol": depth_ticker,
+        })
+        depth_payload = _extract_depth_payload(quote if isinstance(quote, dict) else None)
+
+    status = await api_status()
+    live_count = len(prices) + len(commodities_payload) + len(indices_payload)
+    if live_count == 0 and not status.get("degraded_reason"):
+        status = {
+            **status,
+            "degraded_reason": "No live market payload returned by Groww",
+        }
+
+    return {
+        "prices": prices,
+        "commodities": commodities_payload,
+        "indices": indices_payload,
+        "depth": depth_payload,
+        "status": status,
+        "ts": datetime.now(IST).isoformat(),
+    }
+
+
+@app.get("/api/workstation/snapshot")
+async def get_workstation_snapshot(
+    symbols: str = Query("", description="Comma-separated NSE tickers"),
+    commodities: bool = Query(True),
+    indices: bool = Query(True),
+    depth_symbol: str | None = Query(None),
+):
+    return await _build_workstation_snapshot(symbols, commodities, indices, depth_symbol)
+
+
+@app.get("/api/stream/workstation")
+async def stream_workstation(
+    symbols: str = Query("", description="Comma-separated NSE tickers"),
+    commodities: bool = Query(True),
+    indices: bool = Query(True),
+    depth_symbol: str | None = Query(None),
+):
+    async def event_generator():
+        while True:
+            try:
+                snapshot = await _build_workstation_snapshot(symbols, commodities, indices, depth_symbol)
+                yield f"data: {json.dumps(snapshot)}\n\n"
+                equity_open = _is_equity_market_open()
+                commodity_open = _is_commodity_market_open()
+                await asyncio.sleep(1.0 if (equity_open or commodity_open) else 5.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e), 'ts': datetime.now(IST).isoformat()})}\n\n"
+                await asyncio.sleep(2.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 async def _refresh_groww_ohlc_cache(cash_syms: list[str]):
     global _sse_groww_ohlc_cache, _sse_prev_close_cache, _sse_ohlc_ts
     try:
@@ -2727,4 +3005,3 @@ async def stream_prices():
             "X-Accel-Buffering": "no",
         },
     )
-

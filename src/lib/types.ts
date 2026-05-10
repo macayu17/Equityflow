@@ -109,6 +109,9 @@ export interface Order {
   status_note?: string;
   executed_price?: number;
   lot_size?: number;
+  charges?: number;
+  gross_total?: number;
+  net_total?: number;
 }
 
 export interface OrderRequest {
@@ -175,6 +178,9 @@ export interface Transaction {
   price: number;
   quantity: number;
   total: number;
+  charges?: number;
+  gross_total?: number;
+  net_total?: number;
   strategy_tag: StrategyTag;
   product: ProductType;
   status: OrderStatus;

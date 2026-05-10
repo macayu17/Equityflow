@@ -13,6 +13,8 @@ interface StockChartProps {
   segment?: string;
   height?: number;
   liveLtp?: number;
+  timeframeValue?: Timeframe;
+  onTimeframeChange?: (timeframe: Timeframe) => void;
 }
 
 interface CandleData {
@@ -25,7 +27,8 @@ interface CandleData {
 }
 
 type ChartTime = number | { year: number; month: number; day: number };
-type ChartInterval = "1T" | "10T" | "100T" | "1000T" | "1M" | "2M" | "3M" | "5M" | "10M" | "15M" | "30M" | "45M" | "1H" | "2H" | "3H" | "4H";
+export type ChartInterval = "1T" | "10T" | "100T" | "1000T" | "1M" | "2M" | "3M" | "5M" | "10M" | "15M" | "30M" | "45M" | "1H" | "2H" | "3H" | "4H";
+type IndicatorKey = "EMA20" | "SMA50" | "VWAP";
 
 const CHART_INTERVALS: { label: string; value: ChartInterval }[] = [
   { label: "1 tick", value: "1T" },
@@ -46,7 +49,15 @@ const CHART_INTERVALS: { label: string; value: ChartInterval }[] = [
   { label: "4 hours", value: "4H" },
 ];
 
-export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, height = 420, liveLtp }: StockChartProps) {
+const INDICATORS: { key: IndicatorKey; label: string; color: string }[] = [
+  { key: "EMA20", label: "EMA 20", color: "#f59e0b" },
+  { key: "SMA50", label: "SMA 50", color: "#38bdf8" },
+  { key: "VWAP", label: "VWAP", color: "#a78bfa" },
+];
+
+const candleCache = new Map<string, { expiresAt: number; data: CandleData[] }>();
+
+export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, height = 420, liveLtp, timeframeValue, onTimeframeChange }: StockChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
   // ── Refs for chart lifecycle (cleaned up synchronously, no closure issues) ──
@@ -56,6 +67,8 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
   const candleSeriesRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const volumeSeriesRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const indicatorSeriesRef = useRef<Partial<Record<IndicatorKey, any>>>({});
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const disposedRef = useRef(false);
@@ -63,6 +76,11 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
 
   const [timeframe, setTimeframe] = useState<Timeframe>("3M");
   const [chartInterval, setChartInterval] = useState<ChartInterval>("5M");
+  const [visibleIndicators, setVisibleIndicators] = useState<Record<IndicatorKey, boolean>>({
+    EMA20: true,
+    SMA50: false,
+    VWAP: false,
+  });
   const [isDark, setIsDark] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +93,12 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
   // without triggering chart recreation.
   const timeframeRef = useRef(timeframe);
   timeframeRef.current = timeframe;
+
+  useEffect(() => {
+    if (timeframeValue && timeframeValue !== timeframe) {
+      setTimeframe(timeframeValue);
+    }
+  }, [timeframeValue, timeframe]);
 
   const normalizeCandleTime = useCallback((time: number) => {
     // Groww API returns seconds (10-digit). Only divide if truly milliseconds (13-digit).
@@ -190,6 +214,52 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
     }));
   }, [getIntervalMinutes, normalizeCandleTime]);
 
+  const calculateLineData = useCallback((candles: CandleData[], indicator: IndicatorKey) => {
+    type UTCTimestamp = import("lightweight-charts").UTCTimestamp;
+    if (indicator === "SMA50") {
+      return candles.map((candle, index) => {
+        if (index < 49) return null;
+        const window = candles.slice(index - 49, index + 1);
+        const value = window.reduce((sum, item) => sum + item.close, 0) / window.length;
+        return { time: normalizeCandleTime(candle.time) as UTCTimestamp, value: Number(value.toFixed(2)) };
+      }).filter(Boolean);
+    }
+
+    if (indicator === "VWAP") {
+      let cumulativePriceVolume = 0;
+      let cumulativeVolume = 0;
+      return candles.map((candle) => {
+        const typical = (candle.high + candle.low + candle.close) / 3;
+        const volume = candle.volume || 1;
+        cumulativePriceVolume += typical * volume;
+        cumulativeVolume += volume;
+        return {
+          time: normalizeCandleTime(candle.time) as UTCTimestamp,
+          value: Number((cumulativePriceVolume / cumulativeVolume).toFixed(2)),
+        };
+      });
+    }
+
+    const smoothing = 2 / (20 + 1);
+    let ema = candles[0]?.close ?? 0;
+    return candles.map((candle, index) => {
+      ema = index === 0 ? candle.close : candle.close * smoothing + ema * (1 - smoothing);
+      return { time: normalizeCandleTime(candle.time) as UTCTimestamp, value: Number(ema.toFixed(2)) };
+    });
+  }, [normalizeCandleTime]);
+
+  const updateIndicatorSeries = useCallback((candles: CandleData[]) => {
+    for (const indicator of INDICATORS) {
+      const series = indicatorSeriesRef.current[indicator.key];
+      if (!series) continue;
+      try {
+        series.setData(visibleIndicators[indicator.key] ? calculateLineData(candles, indicator.key) : []);
+      } catch {
+        // Ignore chart disposal races.
+      }
+    }
+  }, [calculateLineData, visibleIndicators]);
+
   // ── Detect dark mode ──
   useEffect(() => {
     const check = () => setIsDark(document.documentElement.classList.contains("dark"));
@@ -216,17 +286,27 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
   const fetchCandles = useCallback(async (tf: string, signal?: AbortSignal): Promise<CandleData[]> => {
     try {
       const intervalMinutes = getIntervalMinutes(chartInterval);
+      const cacheKey = [exchange, segment, ticker, tf, chartInterval].join(":");
+      const cached = candleCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.data;
+
       const res = await fetch(
         `${API_CONFIG.baseUrl}/api/candles/${ticker}?tf=${tf}&segment=${segment}&exchange=${exchange}${intervalMinutes ? `&interval=${intervalMinutes}` : ""}`,
         { cache: "no-store", signal }
       );
       if (!res.ok) throw new Error("Failed to fetch candle data");
-      return await res.json();
+      const data = await res.json();
+      candleCache.set(cacheKey, { data, expiresAt: Date.now() + (marketOpen ? 5000 : 30000) });
+      if (candleCache.size > 80) {
+        const firstKey = candleCache.keys().next().value;
+        if (firstKey) candleCache.delete(firstKey);
+      }
+      return data;
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") return [];
       return [];
     }
-  }, [ticker, exchange, segment, chartInterval, getIntervalMinutes]);
+  }, [ticker, exchange, segment, chartInterval, getIntervalMinutes, marketOpen]);
 
   // ══════════════════════════════════════════════════════════════
   // Effect 1: Chart instance lifecycle
@@ -322,6 +402,17 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
       volSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
       volumeSeriesRef.current = volSeries;
 
+      indicatorSeriesRef.current = {};
+      for (const indicator of INDICATORS) {
+        indicatorSeriesRef.current[indicator.key] = chart.addLineSeries({
+          color: indicator.color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          crosshairMarkerVisible: false,
+        });
+      }
+
       // Resize observer (stored in ref so cleanup always disconnects)
       const ro = new ResizeObserver((entries) => {
         if (disposedRef.current || !chartApiRef.current) return;
@@ -345,6 +436,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
       chartApiRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      indicatorSeriesRef.current = {};
       if (chart) { try { chart.remove(); } catch {} }
     };
   }, [isDark, height, formatIstTime, formatIstTickMark]);
@@ -405,6 +497,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
       try {
         candleSeriesRef.current?.setData(candleData);
         volumeSeriesRef.current?.setData(volData);
+        updateIndicatorSeries(candles);
         chartApiRef.current?.timeScale().fitContent();
         setError(null);
       } catch {
@@ -441,6 +534,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
               ? (isDark ? "rgba(0,200,83,0.3)" : "rgba(0,200,83,0.4)")
               : (isDark ? "rgba(239,68,68,0.3)" : "rgba(239,68,68,0.4)"),
           })));
+          updateIndicatorSeries(processed);
         } catch {
           // silently ignore refresh errors
         }
@@ -454,7 +548,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
       controller.abort();
       if (refreshTimerRef.current) { clearInterval(refreshTimerRef.current); refreshTimerRef.current = null; }
     };
-  }, [ticker, timeframe, chartInterval, isDark, fetchCandles, normalizeCandleTime, transformCandlesByInterval, marketOpen]);
+  }, [ticker, timeframe, chartInterval, isDark, fetchCandles, normalizeCandleTime, transformCandlesByInterval, marketOpen, updateIndicatorSeries]);
 
   useEffect(() => {
     if (!liveLtp || liveLtp <= 0) return;
@@ -484,29 +578,56 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
     }
   }, [liveLtp, normalizeCandleTime]);
 
+  const selectTimeframe = (nextTimeframe: Timeframe) => {
+    setTimeframe(nextTimeframe);
+    onTimeframeChange?.(nextTimeframe);
+  };
+
+  const toggleIndicator = (indicator: IndicatorKey) => {
+    setVisibleIndicators((current) => ({ ...current, [indicator]: !current[indicator] }));
+  };
+
   return (
-    <div className="rounded-lg border border-border dark:border-border-dark bg-card dark:bg-card-dark overflow-hidden">
+    <div className="terminal-panel overflow-hidden">
       {/* Timeframe Controls */}
-      <div className="flex items-center gap-1 px-4 py-2.5 border-b border-border dark:border-border-dark">
+      <div className="terminal-panel-header gap-1">
         {TIMEFRAMES.map((tf) => (
           <button
             key={tf}
-            onClick={() => setTimeframe(tf)}
+            onClick={() => selectTimeframe(tf)}
             className={cn(
-              "px-3 py-1 text-xs font-medium rounded-md transition-all duration-150",
+              "rounded-sm px-2.5 py-1 font-mono text-[11px] font-semibold transition-colors duration-150",
               tf === timeframe
-                ? "bg-accent text-white shadow-xs"
-                : "text-secondary dark:text-secondary-dark hover:bg-surface dark:hover:bg-elevated-dark hover:text-primary dark:hover:text-primary-dark"
+                ? "bg-amber-400 text-black"
+                : "terminal-subtle hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]"
             )}
           >
             {tf}
           </button>
         ))}
         <div className="ml-auto flex items-center gap-2">
+          <div className="hidden items-center gap-1 lg:flex">
+            {INDICATORS.map((indicator) => (
+              <button
+                key={indicator.key}
+                type="button"
+                title={`Toggle ${indicator.label}`}
+                onClick={() => toggleIndicator(indicator.key)}
+                className={cn(
+                  "rounded-sm border px-2 py-1 font-mono text-[10px] font-semibold uppercase transition-colors",
+                  visibleIndicators[indicator.key]
+                    ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                    : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)] hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]"
+                )}
+              >
+                {indicator.key}
+              </button>
+            ))}
+          </div>
           <select
             value={chartInterval}
             onChange={(e) => setChartInterval(e.target.value as ChartInterval)}
-            className="h-7 rounded-md border border-border dark:border-border-dark bg-surface dark:bg-elevated-dark text-[11px] text-primary dark:text-primary-dark px-2 outline-none"
+            className="terminal-input h-7 rounded-sm px-2 text-[11px] outline-none"
           >
             {CHART_INTERVALS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -514,16 +635,16 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
               </option>
             ))}
           </select>
-          <span className="text-2xs text-muted dark:text-muted-dark">{exchange}:{ticker}</span>
-          <span className="text-2xs text-muted dark:text-muted-dark">IST</span>
+          <span className="terminal-subtle font-mono text-2xs">{exchange}:{ticker}</span>
+          <span className="terminal-subtle font-mono text-2xs">IST</span>
         </div>
       </div>
 
       {/* Chart */}
       <div className="relative" style={{ height }}>
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center z-10 bg-card/80 dark:bg-card-dark/80">
-            <div className="flex items-center gap-2 text-sm text-muted dark:text-muted-dark">
+          <div className="terminal-overlay absolute inset-0 z-10 flex items-center justify-center">
+            <div className="terminal-subtle flex items-center gap-2 text-sm">
               <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
               Loading chart...
             </div>
@@ -531,7 +652,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
         )}
         {error && !isLoading && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="text-sm text-muted dark:text-muted-dark">{error}</div>
+            <div className="terminal-subtle text-sm">{error}</div>
           </div>
         )}
         <div ref={chartContainerRef} className="w-full h-full" />

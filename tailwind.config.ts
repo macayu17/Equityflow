@@ -12,59 +12,59 @@ const config: Config = {
       colors: {
         /* ── Minimalist Surface Hierarchy ─── */
         surface: {
-          DEFAULT: "#FAFBFC",
-          dark: "#0F1117",
+          DEFAULT: "#F7F8FA",
+          dark: "#05070A",
         },
         card: {
           DEFAULT: "#FFFFFF",
-          dark: "#16181D",
+          dark: "#0A0E14",
           hover: "#F9FAFB",
-          "hover-dark": "#1C1E24",
+          "hover-dark": "#101720",
         },
         elevated: {
           DEFAULT: "#FFFFFF",
-          dark: "#1C1E24",
+          dark: "#101720",
         },
         /* ── Typography ─── */
         primary: {
           DEFAULT: "#18181B",
-          dark: "#EAEAEC",
+          dark: "#F3F4F6",
         },
         secondary: {
           DEFAULT: "#52525B",
-          dark: "#A1A1AA",
+          dark: "#9CA3AF",
         },
         muted: {
           DEFAULT: "#71717A",
-          dark: "#52525B",
+          dark: "#64748B",
         },
         /* ── Borders — ultra-subtle ─── */
         border: {
           DEFAULT: "#E4E4E7",
-          dark: "#27272A",
+          dark: "#1F2937",
         },
         "border-hover": {
           DEFAULT: "#D4D4D8",
-          dark: "#3F3F46",
+          dark: "#334155",
         },
-        /* ── Brand Accent — Indigo ─── */
+        /* ── Brand Accent — Terminal Amber ─── */
         accent: {
-          DEFAULT: "#6366F1",
-          light: "#A5B4FC",
-          dark: "#818CF8",
-          muted: "rgba(99, 102, 241, 0.08)",
-          "muted-dark": "rgba(129, 140, 248, 0.14)",
+          DEFAULT: "#F5B301",
+          light: "#FDE68A",
+          dark: "#FBBF24",
+          muted: "rgba(245, 179, 1, 0.10)",
+          "muted-dark": "rgba(245, 179, 1, 0.14)",
         },
         /* ── Semantic ─── */
         profit: {
-          DEFAULT: "#10B981",
+          DEFAULT: "#00D084",
           bg: "#ECFDF5",
-          "bg-dark": "rgba(16, 185, 129, 0.10)",
+          "bg-dark": "rgba(0, 208, 132, 0.10)",
         },
         loss: {
-          DEFAULT: "#EF4444",
+          DEFAULT: "#FF4D4F",
           bg: "#FEF2F2",
-          "bg-dark": "rgba(239, 68, 68, 0.10)",
+          "bg-dark": "rgba(255, 77, 79, 0.10)",
         },
         warning: {
           DEFAULT: "#F59E0B",
@@ -72,16 +72,16 @@ const config: Config = {
           "bg-dark": "rgba(245, 158, 11, 0.10)",
         },
         info: {
-          DEFAULT: "#3B82F6",
+          DEFAULT: "#38BDF8",
           bg: "#EFF6FF",
-          "bg-dark": "rgba(59, 130, 246, 0.08)",
+          "bg-dark": "rgba(56, 189, 248, 0.08)",
         },
         /* ── Sidebar ─── */
         sidebar: {
           DEFAULT: "#FFFFFF",
-          dark: "#111318",
-          active: "rgba(99, 102, 241, 0.06)",
-          "active-dark": "rgba(99, 102, 241, 0.10)",
+          dark: "#070A0F",
+          active: "rgba(245, 179, 1, 0.08)",
+          "active-dark": "rgba(245, 179, 1, 0.12)",
         },
       },
       borderRadius: {

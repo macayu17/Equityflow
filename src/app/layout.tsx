@@ -37,14 +37,14 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${jakarta.variable} ${inter.variable} ${geistMono.variable} font-sans antialiased bg-surface dark:bg-surface-dark text-primary dark:text-primary-dark`}
+        className={`${jakarta.variable} ${inter.variable} ${geistMono.variable} terminal-shell font-sans antialiased`}
       >
         <Providers>
           <ToastProvider>
             <div className="flex h-screen overflow-hidden">
               <Sidebar />
               <div className="flex-1 flex flex-col min-w-0 relative">
-                <div className="pointer-events-none absolute inset-0 -z-10 bg-surface dark:bg-surface-dark" />
+                <div className="pointer-events-none absolute inset-0 -z-10 terminal-shell" />
                 <TopBar />
                 <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
                   {children}

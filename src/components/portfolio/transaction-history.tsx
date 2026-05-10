@@ -121,7 +121,12 @@ export function TransactionHistory() {
               {txn.quantity}
             </div>
             <div className="col-span-2 text-right text-xs font-medium text-primary dark:text-primary-dark">
-              {formatCurrency(txn.total)}
+              <div>{formatCurrency(txn.total)}</div>
+              {(txn.charges ?? 0) > 0 && (
+                <div className="text-[10px] font-normal text-muted dark:text-muted-dark">
+                  chg {formatCurrency(txn.charges ?? 0)}
+                </div>
+              )}
             </div>
             <div className="col-span-1">
               <span className="text-[10px] font-medium text-accent bg-accent/10 px-1 py-0.5 rounded">
