@@ -3,15 +3,15 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
-import { MOCK_COMMODITIES, FNO_UNDERLYINGS } from "@/lib/constants";
+import { MOCK_COMMODITIES, FNO_UNDERLYINGS, FNO_EXPIRY_DATES } from "@/lib/constants";
 import { ArrowUpRight, ArrowDownRight, X, Zap, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { OrderPad } from "@/components/trading/order-pad";
 import { StockLogo } from "@/components/market/stock-logo";
 import { useToast } from "@/components/toast-provider";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
-import { API_CONFIG } from "@/lib/constants";
 import type { OrderType, Position } from "@/lib/types";
+import { apiGetJson } from "@/services/request-cache";
 
 interface FnoOptionChainEntry {
     strikePrice: number;
@@ -21,6 +21,11 @@ interface FnoOptionChainEntry {
     PE?: {
         ltp?: number;
     };
+}
+
+interface FnoOptionChainResponse {
+    optionChain?: FnoOptionChainEntry[];
+    strikes?: FnoOptionChainEntry[];
 }
 
 function isFnoContractTicker(ticker: string): boolean {
@@ -200,42 +205,34 @@ export function PositionsSection() {
                 if (!active) return;
                 try {
                     const simplified = pos.ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-                    const resolveRes = await fetch(
-                        `${API_CONFIG.baseUrl}/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`,
-                        { cache: "no-store" }
+                    const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
+                        `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
                     );
-                    if (resolveRes.ok) {
-                        const resolveData = await resolveRes.json();
-                        if (resolveData?.resolved && resolveData.tradingSymbol) {
-                            const quoteRes = await fetch(
-                                `${API_CONFIG.baseUrl}/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`,
-                                { cache: "no-store" }
-                            );
-                            if (quoteRes.ok) {
-                                const q = await quoteRes.json();
-                                const ltp = Number(q.ltp);
-                                if (active && ltp > 0) {
-                                    flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-                                }
-                                continue;
-                            }
+                    if (resolveData?.resolved && resolveData.tradingSymbol) {
+                        const q = await apiGetJson<{ ltp?: number }>(
+                            `/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`
+                        );
+                        const ltp = Number(q?.ltp);
+                        if (active && ltp > 0) {
+                            flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
+                            continue;
                         }
                     }
                     // Fallback to option chain lookup
                     const underlying = extractFnoUnderlying(pos);
                     const isOption = pos.ticker.includes("CE") || pos.ticker.includes("PE");
                     if (isOption && underlying) {
-                        const chainRes = await fetch(
-                            `${API_CONFIG.baseUrl}/api/fno/option-chain?underlying=${encodeURIComponent(underlying)}`,
-                            { cache: "no-store" }
+                        const chainData = await apiGetJson<FnoOptionChainResponse>(
+                            `/api/option-chain?exchange=NSE&underlying=${encodeURIComponent(underlying)}&expiry_date=${encodeURIComponent(FNO_EXPIRY_DATES[0])}`,
+                            { ttlMs: 30_000 }
                         );
-                        if (chainRes.ok) {
-                            const chainData = await chainRes.json() as { optionChain?: FnoOptionChainEntry[] };
+                        if (chainData) {
                             const optionType = pos.ticker.includes("CE") ? "CE" : "PE";
                             const strikeMatch = pos.ticker.match(/\d+/);
                             if (strikeMatch) {
                                 const strikePrice = Number(strikeMatch[0]);
-                                const row = chainData.optionChain?.find((entry) => entry.strikePrice === strikePrice);
+                                const rows = chainData.strikes ?? chainData.optionChain ?? [];
+                                const row = rows.find((entry) => entry.strikePrice === strikePrice);
                                 if (row && row[optionType]) {
                                     const ltp = Number(row[optionType].ltp);
                                     if (active && ltp > 0) {
@@ -248,16 +245,12 @@ export function PositionsSection() {
                     }
 
                     // Final fallback to quote API (mostly for futures)
-                    const res = await fetch(
-                        `${API_CONFIG.baseUrl}/api/fno/quote/${encodeURIComponent(pos.ticker)}`,
-                        { cache: "no-store" }
+                    const q = await apiGetJson<{ ltp?: number }>(
+                        `/api/fno/quote/${encodeURIComponent(pos.ticker)}`
                     );
-                    if (res.ok) {
-                        const q = await res.json();
-                        const ltp = Number(q.ltp);
-                        if (active && ltp > 0) {
-                            flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-                        }
+                    const ltp = Number(q?.ltp);
+                    if (active && ltp > 0) {
+                        flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
                     }
                 } catch {
                     // ignore
@@ -266,7 +259,7 @@ export function PositionsSection() {
         };
 
         fetchFnoPrices();
-        const interval = setInterval(fetchFnoPrices, 3000);
+        const interval = setInterval(fetchFnoPrices, 15_000);
         return () => { active = false; clearInterval(interval); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fnoPositions.map(p => p.id).join(","), flashAndUpdate]);

@@ -1,39 +1,17 @@
 ﻿/**
- * API Service â€” interfaces with FastAPI backend (Groww Trade API proxy).
+ * API Service â€” interfaces with FastAPI backend (Upstox-preferred market data proxy).
  * All data comes from the live backend API.
- *
- * Official Groww Trade API: https://api.groww.in/v1/
  */
 
-import { API_CONFIG } from "@/lib/constants";
+import { apiGetJson, apiPostJson } from "@/services/request-cache";
 import type { StockQuote, StockSearchResult, CandleData, MarketIndex, MarketDepth, SparklinePoint } from "@/lib/types";
 
-const BASE_URL = API_CONFIG.baseUrl;
-
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | null> {
-  try {
-    const res = await fetch(`${BASE_URL}${path}`, { cache: "no-store", ...options });
-    if (!res.ok) { console.warn(`[EquityFlow API] ${path} failed with HTTP ${res.status}`); return null; }
-    return res.json();
-  } catch (err) {
-    console.warn(`[EquityFlow API] ${path} request error`, err);
-    return null;
-  }
+  return apiGetJson<T>(path, { signal: options?.signal ?? undefined });
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T | null> {
-  try {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) { console.warn(`[EquityFlow API] ${path} failed with HTTP ${res.status}`); return null; }
-    return res.json();
-  } catch (err) {
-    console.warn(`[EquityFlow API] ${path} request error`, err);
-    return null;
-  }
+  return apiPostJson<T>(path, body);
 }
 
 // â”€â”€â”€ API Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -109,12 +87,23 @@ export interface StockListItem {
 
 export interface ApiStatus {
   connected: boolean;
+  provider?: "upstox" | "groww" | string;
+  provider_order?: string[];
   reason?: string;
   auth_mode?: string;
   degraded_reason?: string;
   rate_limited_for_sec?: number;
   last_error?: Record<string, unknown>;
   last_success_at?: string | null;
+  providers?: Record<string, {
+    configured?: boolean;
+    connected?: boolean;
+    reason?: string;
+    auth_mode?: string;
+    rate_limited_for_sec?: number;
+    last_error?: Record<string, unknown>;
+    last_success_at?: string | null;
+  }>;
 }
 
 export interface WorkstationSnapshot {
@@ -150,7 +139,7 @@ export async function getTrendingStocks(): Promise<StockQuote[]> {
   return apiData ?? [];
 }
 
-// â”€â”€â”€ Full Quote (Groww live-data/quote) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€â”€ Full Quote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function getFullQuote(
   tradingSymbol: string,
   exchange: string = "NSE",

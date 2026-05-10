@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { StockCard } from "@/components/market/stock-card";
-import { API_CONFIG } from "@/lib/constants";
 import { Search, Grid3X3, List, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarketStatusBadge } from "@/components/market/market-status";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
+import { apiGetJson } from "@/services/request-cache";
 
 interface StockListItem {
   ticker: string;
@@ -40,15 +40,14 @@ export default function StocksPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_CONFIG.baseUrl}/api/stocks`, { cache: "no-store" });
-      if (res.ok) {
-        const data: StockListItem[] = await res.json();
+      const data = await apiGetJson<StockListItem[]>("/api/stocks", { ttlMs: 2 * 60_000 });
+      if (data) {
         setStocks(data);
         setSource("api");
         setLoading(false);
         return;
       }
-      setError(`Failed to load stocks (HTTP ${res.status})`);
+      setError("Failed to load stocks from backend");
     } catch {
       setError("Backend unavailable. Check /api/status and Groww credentials.");
     }

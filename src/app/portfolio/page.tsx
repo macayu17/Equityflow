@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useCallback, useRef } from "react";
+import Link from "next/link";
 import { PortfolioSummaryCard, HoldingsList } from "@/components/portfolio/holdings";
 import { PositionsSection } from "@/components/portfolio/positions-section";
 import { OrdersHistory } from "@/components/portfolio/orders-history";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
-import { API_CONFIG } from "@/lib/constants";
 import type { Position } from "@/lib/types";
-import { RotateCcw } from "lucide-react";
+import { Activity, BriefcaseBusiness, CandlestickChart, Clock3, History, RotateCcw, Search, ShieldCheck } from "lucide-react";
 import { useToast } from "@/components/toast-provider";
+import { apiGetJson } from "@/services/request-cache";
+import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
 
 function isFnoContractTicker(ticker: string): boolean {
   const symbol = ticker.toUpperCase();
@@ -23,7 +25,7 @@ function isFnoPosition(position: Position): boolean {
 }
 
 export default function PortfolioPage() {
-  const { resetAccount, positions, updateLTP } = usePortfolio();
+  const { resetAccount, positions, updateLTP, summary, balance, orders } = usePortfolio();
   const { prices, commodities } = useAllStreamPrices();
   const { toast } = useToast();
 
@@ -34,6 +36,15 @@ export default function PortfolioPage() {
     () => positions.filter((position) => isFnoPosition(position)),
     [positions]
   );
+  const pendingOrders = useMemo(() => orders.filter((order) => order.status === "PENDING").length, [orders]);
+  const netWorth = balance + summary.currentValue;
+  const exposure = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
+  const pageActions = [
+    { href: "/stocks", label: "Find Stocks", meta: "Equity watchlist", icon: Search },
+    { href: "/fno", label: "Option Chain", meta: "Calls, puts, futures", icon: CandlestickChart },
+    { href: "/strategies", label: "Strategies", meta: "Review signal P&L", icon: ShieldCheck },
+    { href: "/transactions", label: "Ledger", meta: "Trade history", icon: History },
+  ];
 
   // SSE-based equity updates
   useEffect(() => {
@@ -54,16 +65,10 @@ export default function PortfolioPage() {
     }
     try {
       const simplified = ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-      const res = await fetch(
-        `${API_CONFIG.baseUrl}/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`,
-        { cache: "no-store" }
+      const data = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
+        `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
       );
-      if (!res.ok) {
-        resolvedSymbolsRef.current[ticker] = null;
-        return null;
-      }
-      const data = await res.json();
-      const symbol = data?.resolved ? data.tradingSymbol : null;
+      const symbol = data?.resolved ? data.tradingSymbol ?? null : null;
       resolvedSymbolsRef.current[ticker] = symbol;
       return symbol;
     } catch {
@@ -93,13 +98,11 @@ export default function PortfolioPage() {
 
         // Step 2: Batch LTP fetch with FNO segment
         const exchangeSymbols = resolvedPairs.map((p) => `NSE_${p.symbol}`).join(",");
-        const res = await fetch(
-          `${API_CONFIG.baseUrl}/api/ltp?segment=FNO&exchange_symbols=${encodeURIComponent(exchangeSymbols)}`,
-          { cache: "no-store" }
+        const data = await apiGetJson<{ prices?: Record<string, number> }>(
+          `/api/ltp?segment=FNO&exchange_symbols=${encodeURIComponent(exchangeSymbols)}`,
+          { ttlMs: 5_000 }
         );
-
-        if (res.ok) {
-          const data = await res.json();
+        if (data) {
           const ltpMap = data?.prices && typeof data.prices === "object" ? data.prices : {};
 
           for (const { ticker, symbol } of resolvedPairs) {
@@ -119,7 +122,7 @@ export default function PortfolioPage() {
     };
 
     void refreshFnoLtps();
-    const timer = setInterval(refreshFnoLtps, 3000);
+    const timer = setInterval(refreshFnoLtps, 10_000);
     return () => clearInterval(timer);
   }, [fnoPositions, updateLTP, resolveSymbol]);
 
@@ -131,17 +134,30 @@ export default function PortfolioPage() {
   };
 
   return (
-    <div className="terminal-shell min-h-full px-3 py-3 md:px-4 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="terminal-shell min-h-full space-y-4 px-3 py-3 md:px-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="terminal-title text-sm">Portfolio</h1>
-          <p className="terminal-subtle text-xs">
-            Your virtual holdings & performance
-          </p>
+          <div className="mb-1.5 flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-sm border border-[color:var(--terminal-border)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]">
+              <BriefcaseBusiness size={16} strokeWidth={2.1} />
+            </div>
+            <h1 className="terminal-title text-sm">Portfolio</h1>
+          </div>
+          <div className="ml-[42px] flex flex-wrap items-center gap-2">
+            <span className="terminal-badge rounded-sm px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]">
+              Net {formatCurrency(netWorth)}
+            </span>
+            <span className={cn("rounded-sm border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]", getPriceChangeColor(summary.totalPnl))}>
+              P&L {summary.totalPnl >= 0 ? "+" : ""}{formatCurrency(summary.totalPnl)} ({formatPercentage(summary.totalPnlPercent)})
+            </span>
+            <span className="terminal-subtle font-mono text-[10px] uppercase tracking-[0.1em]">
+              {positions.length} holdings · {pendingOrders} open orders · {exposure.toFixed(2)}% deployed
+            </span>
+          </div>
         </div>
         <button
           onClick={handleReset}
-          className="flex items-center gap-1.5 rounded-sm border border-loss/30 px-3.5 py-2 text-xs font-semibold uppercase tracking-[0.05em] text-loss transition-colors hover:bg-loss/10"
+          className="flex h-9 items-center justify-center gap-1.5 rounded-sm border border-loss/30 px-3.5 text-xs font-semibold uppercase tracking-[0.05em] text-loss transition-colors hover:bg-loss/10 lg:self-start"
         >
           <RotateCcw size={12} />
           Reset Portfolio
@@ -150,19 +166,41 @@ export default function PortfolioPage() {
 
       <PortfolioSummaryCard />
 
+      <div className="grid gap-2 md:grid-cols-4">
+        {pageActions.map((action) => (
+          <Link key={action.href} href={action.href} className="portfolio-action-tile group flex items-center gap-3 p-3">
+            <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-sm border border-[color:var(--terminal-grid)] bg-[var(--terminal-fill)] text-[var(--terminal-accent)] transition-colors group-hover:border-[color:var(--terminal-accent)]">
+              <action.icon size={16} strokeWidth={2} />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] font-bold uppercase tracking-[0.07em]">{action.label}</span>
+              <span className="terminal-subtle block truncate text-[10px]">{action.meta}</span>
+            </span>
+          </Link>
+        ))}
+      </div>
+
       <PositionsSection />
 
       <div>
-        <h2 className="terminal-title mb-3">
-          Holdings
-        </h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="terminal-title">Holdings</h2>
+          <span className="terminal-subtle flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em]">
+            <Activity size={11} />
+            {positions.length} active
+          </span>
+        </div>
         <HoldingsList />
       </div>
 
       <div>
-        <h2 className="terminal-title mb-3">
-          Orders
-        </h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="terminal-title">Orders</h2>
+          <span className="terminal-subtle flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em]">
+            <Clock3 size={11} />
+            {pendingOrders} pending
+          </span>
+        </div>
         <OrdersHistory />
       </div>
     </div>

@@ -115,6 +115,7 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelayRef = useRef(2_500);
   const activeTickerKey = activeTickers.join(",");
 
   /* ── Consolidated workstation stream ── */
@@ -142,7 +143,10 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
       esRef.current = es;
 
       es.onopen = () => {
-        if (!disposed) setConnected(true);
+        if (!disposed) {
+          reconnectDelayRef.current = 2_500;
+          setConnected(true);
+        }
       };
 
       es.onmessage = (event) => {
@@ -184,7 +188,8 @@ export function PriceStreamProvider({ children }: { children: ReactNode }) {
         setConnected(false);
         es.close();
         esRef.current = null;
-        reconnectTimer.current = setTimeout(connect, 1200);
+        reconnectTimer.current = setTimeout(connect, reconnectDelayRef.current);
+        reconnectDelayRef.current = Math.min(30_000, reconnectDelayRef.current * 2);
       };
     }
 
@@ -249,59 +254,5 @@ export function useAllStreamPrices() {
  * Connects DIRECTLY to backend — no proxy, no buffering.
  */
 export function useFastStockStream(ticker: string | null): TickerPrice | null {
-  const [price, setPrice] = useState<TickerPrice | null>(null);
-
-  useEffect(() => {
-    if (!ticker) {
-      setPrice(null);
-      return;
-    }
-
-    let disposed = false;
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const connect = () => {
-      if (disposed) return;
-      es = new EventSource(
-        `${BACKEND}/api/stream/stock/${encodeURIComponent(ticker)}`
-      );
-
-      es.onmessage = (event) => {
-        if (disposed) return;
-        try {
-          const data = JSON.parse(event.data);
-          if (typeof data?.ltp === "number" && data.ltp > 0) {
-            setPrice({
-              ltp: data.ltp,
-              change: Number(data.change) || 0,
-              changePercent: Number(data.changePercent) || 0,
-              name: data.name || ticker,
-            });
-          }
-        } catch {
-          // ignore
-        }
-      };
-
-      es.onerror = () => {
-        if (disposed) return;
-        if (es) {
-          es.close();
-          es = null;
-        }
-        reconnectTimer = setTimeout(connect, 400);
-      };
-    };
-
-    connect();
-
-    return () => {
-      disposed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (es) es.close();
-    };
-  }, [ticker]);
-
-  return price;
+  return useStreamPrice(ticker);
 }

@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { cn, formatCurrency } from "@/lib/utils";
 import type { OrderStatus, OrderType } from "@/lib/types";
-import { ArrowUpRight, ArrowDownRight, Clock3, CheckCircle2, XCircle } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, Clock3, CheckCircle2, XCircle, CandlestickChart, Search } from "lucide-react";
 import { useToast } from "@/components/toast-provider";
 
 const STATUS_TABS: Array<OrderStatus | "ALL"> = ["ALL", "PENDING", "COMPLETED", "REJECTED", "CANCELLED"];
@@ -75,9 +76,20 @@ export function OrdersHistory() {
 
   if (orders.length === 0) {
     return (
-      <div className="rounded-xl border border-border dark:border-border-dark bg-card dark:bg-card-dark p-6 text-center">
-        <h3 className="text-sm font-medium text-primary dark:text-primary-dark mb-1">No Orders Yet</h3>
-        <p className="text-xs text-muted dark:text-muted-dark">Your queued and executed orders will appear here</p>
+      <div className="terminal-panel p-6 text-center">
+        <Clock3 size={32} className="mx-auto mb-3 text-[var(--terminal-subtle)] opacity-50" />
+        <h3 className="mb-1 text-sm font-semibold text-[var(--terminal-fg)]">No Orders Yet</h3>
+        <p className="terminal-subtle mb-4 text-xs">Queued and executed orders will appear here</p>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Link href="/stocks" className="terminal-action gap-1.5">
+            <Search size={12} />
+            Equity Order
+          </Link>
+          <Link href="/fno" className="terminal-action gap-1.5">
+            <CandlestickChart size={12} />
+            F&O Order
+          </Link>
+        </div>
       </div>
     );
   }

@@ -5,6 +5,7 @@ import { getPortfolioManager, type VirtualPortfolioManager } from "@/lib/engine"
 import type { OrderRequest, Position, Transaction, PortfolioSummary, StrategyPerformance, Order } from "@/lib/types";
 import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import type { MarketSegment } from "@/lib/market-hours";
+import { apiGetJson } from "@/services/request-cache";
 
 // External store to sync portfolio state across components
 let listeners: (() => void)[] = [];
@@ -41,9 +42,8 @@ export function usePortfolio() {
   const resolveOpenPrice = useCallback(async (ticker: string, segment: MarketSegment) => {
     try {
       if (segment === "commodity" || commodityTickers.has(ticker)) {
-        const res = await fetch(`${API_CONFIG.baseUrl}/api/commodity/quote/${ticker}`, { cache: "no-store" });
-        if (!res.ok) return null;
-        const q = await res.json();
+        const q = await apiGetJson<{ open?: number; ltp?: number }>(`/api/commodity/quote/${ticker}`);
+        if (!q) return null;
         return {
           openPrice: Number(q.open) || Number(q.ltp) || 0,
           ltp: Number(q.ltp) || 0,
@@ -53,36 +53,31 @@ export function usePortfolio() {
       if (segment === "fno") {
         // Resolve simplified ticker (e.g. NIFTY25300CE) to real Groww FNO symbol
         const simplified = ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-        const resolveRes = await fetch(`${API_CONFIG.baseUrl}/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`, { cache: "no-store" });
-        if (resolveRes.ok) {
-          const resolveData = await resolveRes.json();
-          if (resolveData?.resolved && resolveData.tradingSymbol) {
-            const quoteRes = await fetch(
-              `${API_CONFIG.baseUrl}/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`,
-              { cache: "no-store" }
-            );
-            if (quoteRes.ok) {
-              const q = await quoteRes.json();
-              return {
-                openPrice: Number(q.open) || Number(q.ltp) || 0,
-                ltp: Number(q.ltp) || 0,
-              };
-            }
+        const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
+          `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
+        );
+        if (resolveData?.resolved && resolveData.tradingSymbol) {
+          const q = await apiGetJson<{ open?: number; ltp?: number }>(
+            `/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`
+          );
+          if (q) {
+            return {
+              openPrice: Number(q.open) || Number(q.ltp) || 0,
+              ltp: Number(q.ltp) || 0,
+            };
           }
         }
         // Fallback to underlying spot quote
-        const res = await fetch(`${API_CONFIG.baseUrl}/api/fno/quote/${ticker}`, { cache: "no-store" });
-        if (!res.ok) return null;
-        const q = await res.json();
+        const q = await apiGetJson<{ open?: number; ltp?: number }>(`/api/fno/quote/${ticker}`);
+        if (!q) return null;
         return {
           openPrice: Number(q.open) || Number(q.ltp) || 0,
           ltp: Number(q.ltp) || 0,
         };
       }
 
-      const res = await fetch(`${API_CONFIG.baseUrl}/api/stock/${ticker}`, { cache: "no-store" });
-      if (!res.ok) return null;
-      const q = await res.json();
+      const q = await apiGetJson<{ open?: number; ltp?: number }>(`/api/stock/${ticker}`);
+      if (!q) return null;
       return {
         openPrice: Number(q.open) || Number(q.ltp) || 0,
         ltp: Number(q.ltp) || 0,
@@ -105,7 +100,7 @@ export function usePortfolio() {
     };
 
     run();
-    const interval = setInterval(run, 3000);
+    const interval = setInterval(run, 10_000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -210,22 +205,40 @@ export function usePortfolio() {
 
 // ─── Theme Hook ──────────────────────────────────────────────
 export function useTheme() {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(true);
 
   useEffect(() => {
     const stored = localStorage.getItem("equityflow_theme");
     const isDark = stored ? stored === "dark" : true;
-    setDark(isDark);
     document.documentElement.classList.toggle("dark", isDark);
+    setDark(isDark);
+
+    const syncFromDom = () => {
+      setDark(document.documentElement.classList.contains("dark"));
+    };
+
+    const observer = new MutationObserver(syncFromDom);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== "equityflow_theme") return;
+      const next = event.newValue ? event.newValue === "dark" : true;
+      document.documentElement.classList.toggle("dark", next);
+      setDark(next);
+    };
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("storage", handleStorage);
+    };
   }, []);
 
   const toggle = useCallback(() => {
-    setDark((prev) => {
-      const next = !prev;
-      document.documentElement.classList.toggle("dark", next);
-      localStorage.setItem("equityflow_theme", next ? "dark" : "light");
-      return next;
-    });
+    const next = !document.documentElement.classList.contains("dark");
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("equityflow_theme", next ? "dark" : "light");
+    setDark(next);
   }, []);
 
   return { dark, toggle };

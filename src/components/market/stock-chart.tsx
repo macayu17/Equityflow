@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Timeframe } from "@/lib/types";
 import { TIMEFRAMES } from "@/lib/types";
-import { API_CONFIG } from "@/lib/constants";
 import { getMarketStatus } from "@/lib/market-hours";
+import { apiGetJson } from "@/services/request-cache";
 
 interface StockChartProps {
   ticker: string;
@@ -59,6 +60,7 @@ const candleCache = new Map<string, { expiresAt: number; data: CandleData[] }>()
 
 export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, height = 420, liveLtp, timeframeValue, onTimeframeChange }: StockChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const intervalPickerRef = useRef<HTMLDivElement>(null);
 
   // ── Refs for chart lifecycle (cleaned up synchronously, no closure issues) ──
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -76,6 +78,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
 
   const [timeframe, setTimeframe] = useState<Timeframe>("3M");
   const [chartInterval, setChartInterval] = useState<ChartInterval>("5M");
+  const [intervalOpen, setIntervalOpen] = useState(false);
   const [visibleIndicators, setVisibleIndicators] = useState<Record<IndicatorKey, boolean>>({
     EMA20: true,
     SMA50: false,
@@ -290,13 +293,12 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
       const cached = candleCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-      const res = await fetch(
-        `${API_CONFIG.baseUrl}/api/candles/${ticker}?tf=${tf}&segment=${segment}&exchange=${exchange}${intervalMinutes ? `&interval=${intervalMinutes}` : ""}`,
-        { cache: "no-store", signal }
+      const data = await apiGetJson<CandleData[]>(
+        `/api/candles/${ticker}?tf=${tf}&segment=${segment}&exchange=${exchange}${intervalMinutes ? `&interval=${intervalMinutes}` : ""}`,
+        { signal, ttlMs: marketOpen ? 15_000 : 60_000 }
       );
-      if (!res.ok) throw new Error("Failed to fetch candle data");
-      const data = await res.json();
-      candleCache.set(cacheKey, { data, expiresAt: Date.now() + (marketOpen ? 5000 : 30000) });
+      if (!data) throw new Error("Failed to fetch candle data");
+      candleCache.set(cacheKey, { data, expiresAt: Date.now() + (marketOpen ? 15_000 : 60_000) });
       if (candleCache.size > 80) {
         const firstKey = candleCache.keys().next().value;
         if (firstKey) candleCache.delete(firstKey);
@@ -511,7 +513,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
       if (refreshTimerRef.current) { clearInterval(refreshTimerRef.current); refreshTimerRef.current = null; }
       if (!marketOpen) return;
 
-      const refreshMs = timeframe === "1D" ? 900 : 1800;
+      const refreshMs = timeframe === "1D" ? 15_000 : 30_000;
       refreshTimerRef.current = setInterval(async () => {
         if (cancelled || !candleSeriesRef.current) return;
         try {
@@ -587,6 +589,28 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
     setVisibleIndicators((current) => ({ ...current, [indicator]: !current[indicator] }));
   };
 
+  useEffect(() => {
+    if (!intervalOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!intervalPickerRef.current?.contains(event.target as Node)) {
+        setIntervalOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIntervalOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [intervalOpen]);
+
+  const selectedInterval = CHART_INTERVALS.find((opt) => opt.value === chartInterval) ?? CHART_INTERVALS[0];
+
   return (
     <div className="terminal-panel overflow-hidden">
       {/* Timeframe Controls */}
@@ -624,17 +648,49 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
               </button>
             ))}
           </div>
-          <select
-            value={chartInterval}
-            onChange={(e) => setChartInterval(e.target.value as ChartInterval)}
-            className="terminal-input h-7 rounded-sm px-2 text-[11px] outline-none"
-          >
-            {CHART_INTERVALS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <div ref={intervalPickerRef} className="relative">
+            <button
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={intervalOpen}
+              onClick={() => setIntervalOpen((open) => !open)}
+              className="terminal-select-trigger"
+            >
+              <span>{selectedInterval.label}</span>
+              <ChevronDown
+                size={13}
+                strokeWidth={2}
+                className={cn("transition-transform duration-150", intervalOpen && "rotate-180")}
+              />
+            </button>
+            {intervalOpen && (
+              <div
+                role="listbox"
+                className="terminal-select-menu absolute right-0 top-full z-30 mt-1 max-h-80 w-44 overflow-y-auto rounded-sm py-1 animate-scale-in"
+              >
+                {CHART_INTERVALS.map((opt) => {
+                  const active = opt.value === chartInterval;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      data-active={active}
+                      onClick={() => {
+                        setChartInterval(opt.value);
+                        setIntervalOpen(false);
+                      }}
+                      className="terminal-select-item"
+                    >
+                      <span>{opt.label}</span>
+                      {active && <Check size={12} strokeWidth={2.2} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <span className="terminal-subtle font-mono text-2xs">{exchange}:{ticker}</span>
           <span className="terminal-subtle font-mono text-2xs">IST</span>
         </div>

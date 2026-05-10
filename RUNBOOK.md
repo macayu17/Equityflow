@@ -14,10 +14,17 @@ NEXT_PUBLIC_API_URL=http://localhost:8001
 
 ### Backend (`backend/.env`)
 Use `backend/.env.example` as base:
+- `MARKET_DATA_PROVIDER=upstox` prefers Upstox for market data, with Groww fallback
+- `UPSTOX_ACCESS_TOKEN`
 - `GROWW_API_KEY`
 - `GROWW_API_SECRET`
 - Optional `GROWW_ACCESS_TOKEN`
 - Optional `CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000`
+
+Provider behavior:
+- Upstox powers quotes, batch LTP/OHLC, candles, F&O resolution, option chain, stock lists, indices, and streams when `UPSTOX_ACCESS_TOKEN` is configured.
+- Groww remains the fallback market-data provider and is still used for Groww-specific order, holdings, positions, fundamentals, and public charting fallbacks.
+- Request coalescing, TTL caches, and short cooldowns are enabled in `backend/main.py` to reduce rate-limit pressure.
 
 ## Start Services (Windows)
 From project root:
@@ -44,6 +51,8 @@ npm run dev -- --port 3000
 Use this when hosting the frontend on Vercel and the FastAPI backend on Azure App Service.
 
 ### App settings to add in Azure
+- `MARKET_DATA_PROVIDER=upstox`
+- `UPSTOX_ACCESS_TOKEN`
 - `GROWW_API_KEY`
 - `GROWW_API_SECRET`
 - Optional `GROWW_ACCESS_TOKEN`

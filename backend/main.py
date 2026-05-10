@@ -1,6 +1,6 @@
 """
 EquityFlow â€” FastAPI Backend
-Official Groww Trade API integration (https://api.groww.in/v1/).
+Upstox-preferred market-data integration with Groww fallback.
 
 Authentication:
     Uses API Key + Secret â†’ SHA-256 checksum â†’ token exchange.
@@ -20,11 +20,13 @@ import asyncio
 import json
 import os
 import csv
+import gzip
 import hashlib
 import re
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 # Load environment variables from backend/.env
@@ -154,7 +156,7 @@ def _last_trading_day(date_ref: datetime, holiday_set: set[str]) -> datetime:
 
 app = FastAPI(
     title="EquityFlow API",
-    description="Backend proxy for official Groww Trade API. Handles authentication and data transformation.",
+    description="Backend proxy for Upstox-preferred market data with Groww fallback.",
     version="2.0.0",
 )
 
@@ -172,6 +174,8 @@ app.add_middleware(
 GROWW_API_BASE = "https://api.groww.in/v1"
 GROWW_API_KEY = os.getenv("GROWW_API_KEY", "")
 GROWW_API_SECRET = os.getenv("GROWW_API_SECRET", "")
+UPSTOX_API_BASE = os.getenv("UPSTOX_API_BASE", "https://api.upstox.com").rstrip("/")
+MARKET_DATA_PROVIDER = os.getenv("MARKET_DATA_PROVIDER", "upstox").strip().lower()
 
 
 def _clean_access_token(value: str) -> str:
@@ -182,6 +186,39 @@ def _clean_access_token(value: str) -> str:
 
 
 GROWW_ACCESS_TOKEN = _clean_access_token(os.getenv("GROWW_ACCESS_TOKEN", ""))
+UPSTOX_ACCESS_TOKEN = _clean_access_token(os.getenv("UPSTOX_ACCESS_TOKEN", ""))
+
+UPSTOX_INSTRUMENT_URLS = {
+    "NSE": "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
+    "BSE": "https://assets.upstox.com/market-quote/instruments/exchange/BSE.json.gz",
+    "MCX": "https://assets.upstox.com/market-quote/instruments/exchange/MCX.json.gz",
+}
+UPSTOX_INDEX_KEYS = {
+    "NIFTY": "NSE_INDEX|Nifty 50",
+    "NIFTY50": "NSE_INDEX|Nifty 50",
+    "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "NIFTYBANK": "NSE_INDEX|Nifty Bank",
+    "CNXIT": "NSE_INDEX|Nifty IT",
+    "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
+    "INDIAVIX": "NSE_INDEX|India VIX",
+    "NIFTYMIDCAP": "NSE_INDEX|Nifty Midcap 100",
+    "NIFTYSMALL": "NSE_INDEX|Nifty Smallcap 100",
+    "MIDCPNIFTY": "NSE_INDEX|NIFTY MID SELECT",
+    "NIFTYJR": "NSE_INDEX|Nifty Next 50",
+    "NIFTYNXT50": "NSE_INDEX|Nifty Next 50",
+    "SENSEX": "BSE_INDEX|SENSEX",
+}
+
+
+def _is_upstox_configured() -> bool:
+    return bool(UPSTOX_ACCESS_TOKEN)
+
+
+def _market_provider_order() -> list[str]:
+    """Preferred provider order for market-data calls."""
+    if MARKET_DATA_PROVIDER == "groww":
+        return ["groww", "upstox"]
+    return ["upstox", "groww"]
 
 
 # â”€â”€â”€ FNO Instruments Index (from instruments.csv) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -257,9 +294,132 @@ _groww_last_429_log_at: float = 0.0
 _groww_last_error: dict = {}
 _groww_last_success_at: str | None = None
 _groww_disable_access_token: bool = False
+_upstox_rate_limited_until: float = 0.0
+_upstox_last_429_log_at: float = 0.0
+_upstox_last_error: dict = {}
+_upstox_last_success_at: str | None = None
 
 # â”€â”€â”€ Persistent httpx client (connection pooling, avoids TLS handshake per call) â”€â”€
 _http_client: httpx.AsyncClient | None = None
+_upstox_http_client: httpx.AsyncClient | None = None
+_groww_get_cache: dict[str, dict] = {}
+_groww_get_inflight: dict[str, asyncio.Task] = {}
+_groww_get_lock = asyncio.Lock()
+_groww_api_semaphore = asyncio.Semaphore(int(os.getenv("GROWW_MAX_CONCURRENT", "4")))
+_groww_max_cache_entries = int(os.getenv("GROWW_GET_CACHE_MAX", "300"))
+_upstox_get_cache: dict[str, dict] = {}
+_upstox_get_inflight: dict[str, asyncio.Task] = {}
+_upstox_get_lock = asyncio.Lock()
+_upstox_api_semaphore = asyncio.Semaphore(int(os.getenv("UPSTOX_MAX_CONCURRENT", "4")))
+_upstox_max_cache_entries = int(os.getenv("UPSTOX_GET_CACHE_MAX", "300"))
+_upstox_instrument_lock = asyncio.Lock()
+_upstox_instruments_loaded: set[str] = set()
+_upstox_symbol_index: dict[str, dict] = {}
+_upstox_key_index: dict[str, dict] = {}
+_upstox_derivative_index: dict[str, list[dict]] = {}
+_upstox_underlying_index: dict[str, str] = {}
+
+
+def _groww_cache_key(path: str, params: dict | None) -> str:
+    normalized_params = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
+    return json.dumps([path, normalized_params], separators=(",", ":"))
+
+
+def _groww_cache_ttl(path: str, params: dict | None = None) -> float:
+    """Short TTLs collapse duplicate UI bursts without hiding live market movement."""
+    del params
+    if path.startswith("/order/"):
+        return 0.0
+    if path == "/live-data/ltp":
+        return float(os.getenv("GROWW_LTP_CACHE_TTL_SEC", "3"))
+    if path == "/live-data/quote":
+        return float(os.getenv("GROWW_QUOTE_CACHE_TTL_SEC", "5"))
+    if path == "/live-data/ohlc":
+        return float(os.getenv("GROWW_OHLC_CACHE_TTL_SEC", "120"))
+    if path.startswith("/option-chain"):
+        return float(os.getenv("GROWW_OPTION_CHAIN_CACHE_TTL_SEC", "15"))
+    if path.startswith("/live-data/greeks"):
+        return float(os.getenv("GROWW_GREEKS_CACHE_TTL_SEC", "15"))
+    return float(os.getenv("GROWW_DEFAULT_CACHE_TTL_SEC", "10"))
+
+
+def _upstox_cache_key(path: str, params: dict | None) -> str:
+    normalized_params = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
+    return json.dumps([path, normalized_params], separators=(",", ":"))
+
+
+def _upstox_cache_ttl(path: str, params: dict | None = None) -> float:
+    """Cache Upstox reads conservatively so UI bursts do not hit rate limits."""
+    del params
+    if path.startswith("/v3/market-quote/ltp"):
+        return float(os.getenv("UPSTOX_LTP_CACHE_TTL_SEC", "3"))
+    if path.startswith("/v2/market-quote/quotes"):
+        return float(os.getenv("UPSTOX_QUOTE_CACHE_TTL_SEC", "5"))
+    if path.startswith("/v3/market-quote/ohlc"):
+        return float(os.getenv("UPSTOX_OHLC_CACHE_TTL_SEC", "60"))
+    if path.startswith("/v2/option/chain"):
+        return float(os.getenv("UPSTOX_OPTION_CHAIN_CACHE_TTL_SEC", "15"))
+    if path.startswith("/v3/historical-candle"):
+        return float(os.getenv("UPSTOX_CANDLE_CACHE_TTL_SEC", "30"))
+    return float(os.getenv("UPSTOX_DEFAULT_CACHE_TTL_SEC", "10"))
+
+
+def _prune_groww_cache() -> None:
+    if len(_groww_get_cache) <= _groww_max_cache_entries:
+        return
+    oldest = sorted(
+        _groww_get_cache.items(),
+        key=lambda item: item[1].get("last_used_at", item[1].get("expires_at", 0)),
+    )[: max(1, _groww_max_cache_entries // 5)]
+    for key, _ in oldest:
+        _groww_get_cache.pop(key, None)
+
+
+def _prune_upstox_cache() -> None:
+    if len(_upstox_get_cache) <= _upstox_max_cache_entries:
+        return
+    oldest = sorted(
+        _upstox_get_cache.items(),
+        key=lambda item: item[1].get("last_used_at", item[1].get("expires_at", 0)),
+    )[: max(1, _upstox_max_cache_entries // 5)]
+    for key, _ in oldest:
+        _upstox_get_cache.pop(key, None)
+
+
+async def _run_groww_get_cached(cache_key: str, path: str, params: dict | None, ttl: float) -> dict | None:
+    try:
+        async with _groww_api_semaphore:
+            data = await _groww_get_uncached(path, params)
+        if data is not None and ttl > 0:
+            now_ts = time.time()
+            _groww_get_cache[cache_key] = {
+                "data": data,
+                "expires_at": now_ts + ttl,
+                "last_used_at": now_ts,
+            }
+            _prune_groww_cache()
+        return data
+    finally:
+        async with _groww_get_lock:
+            _groww_get_inflight.pop(cache_key, None)
+
+
+async def _run_upstox_get_cached(cache_key: str, path: str, params: dict | None, ttl: float) -> dict | None:
+    try:
+        async with _upstox_api_semaphore:
+            data = await _upstox_get_uncached(path, params)
+        if data is not None and ttl > 0:
+            now_ts = time.time()
+            _upstox_get_cache[cache_key] = {
+                "data": data,
+                "expires_at": now_ts + ttl,
+                "last_used_at": now_ts,
+            }
+            _prune_upstox_cache()
+        return data
+    finally:
+        async with _upstox_get_lock:
+            _upstox_get_inflight.pop(cache_key, None)
 
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
@@ -267,22 +427,42 @@ def _get_http_client() -> httpx.AsyncClient:
         _http_client = httpx.AsyncClient(
             base_url=GROWW_API_BASE,
             timeout=httpx.Timeout(3.0, connect=2.0),
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=8),
             http2=False,
         )
     return _http_client
 
+
+def _get_upstox_http_client() -> httpx.AsyncClient:
+    global _upstox_http_client
+    if _upstox_http_client is None or _upstox_http_client.is_closed:
+        _upstox_http_client = httpx.AsyncClient(
+            base_url=UPSTOX_API_BASE,
+            timeout=httpx.Timeout(4.0, connect=2.0),
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=8),
+            http2=False,
+        )
+    return _upstox_http_client
+
 @app.on_event("startup")
 async def _startup():
     _validate_startup_env()
+    if _is_upstox_configured():
+        print("[EquityFlow] Startup: Upstox access token configured; Upstox is preferred for market data.")
+    elif MARKET_DATA_PROVIDER != "groww":
+        print("[EquityFlow] Startup: UPSTOX_ACCESS_TOKEN missing; market data will fall back to Groww.")
     _get_http_client()  # warm up
+    _get_upstox_http_client()
 
 @app.on_event("shutdown")
 async def _shutdown():
-    global _http_client
+    global _http_client, _upstox_http_client
     if _http_client and not _http_client.is_closed:
         await _http_client.aclose()
         _http_client = None
+    if _upstox_http_client and not _upstox_http_client.is_closed:
+        await _upstox_http_client.aclose()
+        _upstox_http_client = None
 
 
 def _generate_checksum(secret: str, timestamp: str) -> str:
@@ -658,6 +838,53 @@ MOCK_STOCKS = {
 # â”€â”€â”€ Groww API Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _groww_get(path: str, params: dict | None = None) -> dict | None:
+    """Cached/coalesced Groww GET wrapper with stale fallback during rate-limit cooldowns."""
+    global _groww_last_error
+
+    cache_key = _groww_cache_key(path, params)
+    ttl = _groww_cache_ttl(path, params)
+    now_ts = time.time()
+    cached = _groww_get_cache.get(cache_key)
+
+    if ttl > 0 and cached and cached.get("expires_at", 0) > now_ts:
+        cached["last_used_at"] = now_ts
+        return cached.get("data")
+
+    if now_ts < _groww_rate_limited_until:
+        _groww_last_error = {
+            "type": "rate_limited_cooldown",
+            "path": path,
+            "retry_after_sec": max(0, int(_groww_rate_limited_until - now_ts)),
+            "timestamp": datetime.now().isoformat(),
+        }
+        if cached:
+            cached["last_used_at"] = now_ts
+            return cached.get("data")
+        return None
+
+    if ttl <= 0:
+        async with _groww_api_semaphore:
+            return await _groww_get_uncached(path, params)
+
+    async with _groww_get_lock:
+        cached = _groww_get_cache.get(cache_key)
+        now_ts = time.time()
+        if cached and cached.get("expires_at", 0) > now_ts:
+            cached["last_used_at"] = now_ts
+            return cached.get("data")
+        task = _groww_get_inflight.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(_run_groww_get_cached(cache_key, path, params, ttl))
+            _groww_get_inflight[cache_key] = task
+
+    data = await task
+    if data is None and cached:
+        cached["last_used_at"] = time.time()
+        return cached.get("data")
+    return data
+
+
+async def _groww_get_uncached(path: str, params: dict | None = None) -> dict | None:
     """Make an authenticated GET request to Groww Trade API via persistent client."""
     global _groww_rate_limited_until, _groww_last_429_log_at, _groww_last_error, _groww_last_success_at, _groww_disable_access_token
 
@@ -788,6 +1015,135 @@ async def _groww_get(path: str, params: dict | None = None) -> dict | None:
     return None
 
 
+async def _upstox_get(path: str, params: dict | None = None) -> dict | None:
+    """Cached/coalesced Upstox GET wrapper. Returns the response data payload."""
+    global _upstox_last_error
+
+    if not _is_upstox_configured():
+        return None
+
+    cache_key = _upstox_cache_key(path, params)
+    ttl = _upstox_cache_ttl(path, params)
+    now_ts = time.time()
+    cached = _upstox_get_cache.get(cache_key)
+
+    if ttl > 0 and cached and cached.get("expires_at", 0) > now_ts:
+        cached["last_used_at"] = now_ts
+        return cached.get("data")
+
+    if now_ts < _upstox_rate_limited_until:
+        _upstox_last_error = {
+            "type": "rate_limited_cooldown",
+            "path": path,
+            "retry_after_sec": max(0, int(_upstox_rate_limited_until - now_ts)),
+            "timestamp": datetime.now().isoformat(),
+        }
+        if cached:
+            cached["last_used_at"] = now_ts
+            return cached.get("data")
+        return None
+
+    if ttl <= 0:
+        async with _upstox_api_semaphore:
+            return await _upstox_get_uncached(path, params)
+
+    async with _upstox_get_lock:
+        cached = _upstox_get_cache.get(cache_key)
+        now_ts = time.time()
+        if cached and cached.get("expires_at", 0) > now_ts:
+            cached["last_used_at"] = now_ts
+            return cached.get("data")
+        task = _upstox_get_inflight.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(_run_upstox_get_cached(cache_key, path, params, ttl))
+            _upstox_get_inflight[cache_key] = task
+
+    data = await task
+    if data is None and cached:
+        cached["last_used_at"] = time.time()
+        return cached.get("data")
+    return data
+
+
+async def _upstox_get_uncached(path: str, params: dict | None = None) -> dict | None:
+    """Make an authenticated GET request to Upstox API via persistent client."""
+    global _upstox_rate_limited_until, _upstox_last_429_log_at, _upstox_last_error, _upstox_last_success_at
+
+    if not _is_upstox_configured():
+        return None
+
+    now_ts = time.time()
+    if now_ts < _upstox_rate_limited_until:
+        _upstox_last_error = {
+            "type": "rate_limited_cooldown",
+            "path": path,
+            "retry_after_sec": max(0, int(_upstox_rate_limited_until - now_ts)),
+            "timestamp": datetime.now().isoformat(),
+        }
+        return None
+
+    client = _get_upstox_http_client()
+    try:
+        res = await client.get(
+            path,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {UPSTOX_ACCESS_TOKEN}",
+            },
+            params=params,
+        )
+        if res.status_code == 200:
+            payload = res.json()
+            if str(payload.get("status", "")).lower() == "success":
+                _upstox_last_error = {}
+                _upstox_last_success_at = datetime.now(IST).isoformat()
+                return payload.get("data", payload)
+            _upstox_last_error = {
+                "type": "api_failure",
+                "path": path,
+                "message": payload.get("message") or payload.get("errors"),
+                "timestamp": datetime.now().isoformat(),
+            }
+            return None
+        if res.status_code == 429:
+            retry_after = 15
+            try:
+                retry_after = max(5, int(res.headers.get("Retry-After", "15")))
+            except Exception:
+                retry_after = 15
+            _upstox_rate_limited_until = time.time() + retry_after
+            if time.time() - _upstox_last_429_log_at > 10:
+                _upstox_last_429_log_at = time.time()
+                print(f"[EquityFlow] Upstox API 429 rate limit. Backing off for {retry_after}s.")
+            _upstox_last_error = {
+                "type": "http_429",
+                "path": path,
+                "retry_after_sec": retry_after,
+                "timestamp": datetime.now().isoformat(),
+            }
+        else:
+            body = res.text[:500]
+            if res.status_code in (401, 403):
+                _upstox_rate_limited_until = time.time() + 30
+            print(f"[EquityFlow] Upstox API GET {path} HTTP {res.status_code}: {body}")
+            _upstox_last_error = {
+                "type": f"http_{res.status_code}",
+                "path": path,
+                "body": body,
+                "timestamp": datetime.now().isoformat(),
+            }
+    except Exception as e:
+        print(f"[EquityFlow] Upstox API GET {path} exception: {e}")
+        _upstox_last_error = {
+            "type": "exception",
+            "path": path,
+            "message": str(e),
+            "timestamp": datetime.now().isoformat(),
+        }
+    return None
+
+
 async def _groww_post(path: str, body: dict) -> dict | None:
     """Make an authenticated POST request to Groww Trade API via persistent client."""
     token = await _get_access_token()
@@ -865,6 +1221,471 @@ def _to_float(value, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _upstox_symbol_key(value: str | None) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
+
+
+def _upstox_expiry_to_date(value) -> str:
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value) / 1000, IST).strftime("%Y-%m-%d")
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.isdigit():
+            return datetime.fromtimestamp(float(text) / 1000, IST).strftime("%Y-%m-%d")
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(IST).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _upstox_expiry_code(expiry_date: str) -> str:
+    return expiry_date.replace("-", "")[2:] if expiry_date else ""
+
+
+def _remember_upstox_derivative(simple_key: str, entry: dict) -> None:
+    if not simple_key:
+        return
+    key = _upstox_symbol_key(simple_key)
+    _upstox_derivative_index.setdefault(key, []).append(entry)
+
+
+async def _load_upstox_instruments(exchange: str = "NSE") -> None:
+    """Load public Upstox instrument files lazily for symbol -> instrument_key mapping."""
+    exchange = exchange.upper()
+    if exchange in _upstox_instruments_loaded:
+        return
+    url = UPSTOX_INSTRUMENT_URLS.get(exchange)
+    if not url:
+        return
+
+    async with _upstox_instrument_lock:
+        if exchange in _upstox_instruments_loaded:
+            return
+        try:
+            client = _get_upstox_http_client()
+            resp = await client.get(url, timeout=20)
+            resp.raise_for_status()
+            records = json.loads(gzip.decompress(resp.content).decode("utf-8"))
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                segment = str(record.get("segment") or "").upper()
+                instrument_type = str(record.get("instrument_type") or "").upper()
+                trading_symbol = str(record.get("trading_symbol") or "").strip()
+                instrument_key = str(record.get("instrument_key") or "").strip()
+                if not trading_symbol or not instrument_key:
+                    continue
+
+                symbol_key = _upstox_symbol_key(trading_symbol)
+                normalized = {
+                    **record,
+                    "segment": segment,
+                    "instrument_type": instrument_type,
+                    "trading_symbol": trading_symbol,
+                    "instrument_key": instrument_key,
+                    "expiry_date": _upstox_expiry_to_date(record.get("expiry")),
+                }
+
+                _upstox_key_index[instrument_key] = normalized
+                _upstox_symbol_index[f"{exchange}:{segment}:{instrument_type}:{symbol_key}"] = normalized
+
+                if segment.endswith("_EQ") and instrument_type in {"EQ", "BE"}:
+                    _upstox_symbol_index[f"{exchange}:EQ:{symbol_key}"] = normalized
+                    _upstox_underlying_index[symbol_key] = instrument_key
+
+                if segment.endswith("_INDEX") or instrument_type == "INDEX":
+                    _upstox_symbol_index[f"{exchange}:INDEX:{symbol_key}"] = normalized
+                    _upstox_underlying_index[symbol_key] = instrument_key
+
+                if segment.endswith("_FO") and instrument_type in {"FUT", "CE", "PE"}:
+                    underlying = _upstox_symbol_key(record.get("underlying_symbol") or record.get("name") or "")
+                    expiry_date = normalized.get("expiry_date") or ""
+                    expiry_code = _upstox_expiry_code(expiry_date)
+                    strike = ""
+                    if instrument_type in {"CE", "PE"}:
+                        try:
+                            strike = str(int(float(record.get("strike_price", 0))))
+                        except Exception:
+                            strike = ""
+                    entry = {
+                        "tradingSymbol": trading_symbol,
+                        "instrumentKey": instrument_key,
+                        "underlying": underlying,
+                        "strikePrice": strike,
+                        "instrumentType": instrument_type,
+                        "expiryDate": expiry_date,
+                        "lotSize": record.get("lot_size") or record.get("minimum_lot") or "",
+                        "underlyingKey": record.get("underlying_key") or _upstox_underlying_index.get(underlying),
+                    }
+                    if entry["underlyingKey"] and underlying:
+                        _upstox_underlying_index[underlying] = str(entry["underlyingKey"])
+                    _remember_upstox_derivative(trading_symbol, entry)
+                    if underlying:
+                        if instrument_type == "FUT":
+                            _remember_upstox_derivative(f"{underlying}FUT", entry)
+                            _remember_upstox_derivative(f"{underlying}{expiry_code}FUT", entry)
+                        elif strike:
+                            _remember_upstox_derivative(f"{underlying}{strike}{instrument_type}", entry)
+                            _remember_upstox_derivative(f"{underlying}{expiry_code}{strike}{instrument_type}", entry)
+
+            today = datetime.now(IST).strftime("%Y-%m-%d")
+            for key, entries in _upstox_derivative_index.items():
+                entries.sort(key=lambda item: (item.get("expiryDate", "") < today, item.get("expiryDate", "")))
+
+            _upstox_instruments_loaded.add(exchange)
+            print(f"[EquityFlow] Upstox {exchange} instruments loaded: {len(records)} records")
+        except Exception as exc:
+            print(f"[EquityFlow] Upstox {exchange} instrument load failed: {exc}")
+
+
+def _choose_upstox_derivative(entries: list[dict]) -> dict | None:
+    if not entries:
+        return None
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    active = [entry for entry in entries if str(entry.get("expiryDate") or "") >= today]
+    return active[0] if active else entries[-1]
+
+
+async def _resolve_upstox_instrument_key(
+    trading_symbol: str,
+    segment: str = "CASH",
+    exchange: str = "NSE",
+) -> str | None:
+    raw_symbol = (trading_symbol or "").strip()
+    if not raw_symbol:
+        return None
+    if "|" in raw_symbol:
+        return raw_symbol
+
+    segment = segment.upper()
+    exchange = exchange.upper()
+    symbol_key = _upstox_symbol_key(raw_symbol)
+
+    if symbol_key in UPSTOX_INDEX_KEYS:
+        return UPSTOX_INDEX_KEYS[symbol_key]
+
+    if segment == "COMMODITY" or exchange == "MCX":
+        load_exchange = "MCX"
+    elif exchange == "BSE":
+        load_exchange = "BSE"
+    else:
+        load_exchange = "NSE"
+    await _load_upstox_instruments(load_exchange)
+
+    if segment in {"FNO", "FO"}:
+        derivative = _choose_upstox_derivative(_upstox_derivative_index.get(symbol_key, []))
+        if derivative:
+            return str(derivative.get("instrumentKey") or "")
+
+    if segment == "COMMODITY" or exchange == "MCX":
+        record = (
+            _upstox_symbol_index.get(f"MCX:MCX_FO:FUT:{symbol_key}")
+            or _upstox_symbol_index.get(f"MCX:MCX_FO:CE:{symbol_key}")
+            or _upstox_symbol_index.get(f"MCX:MCX_FO:PE:{symbol_key}")
+        )
+        return str(record.get("instrument_key")) if record else None
+
+    record = (
+        _upstox_symbol_index.get(f"{exchange}:EQ:{symbol_key}")
+        or _upstox_symbol_index.get(f"{exchange}:INDEX:{symbol_key}")
+    )
+    return str(record.get("instrument_key")) if record else None
+
+
+async def _resolve_upstox_underlying_key(underlying: str, exchange: str = "NSE") -> str | None:
+    symbol_key = _upstox_symbol_key(underlying)
+    if symbol_key in UPSTOX_INDEX_KEYS:
+        return UPSTOX_INDEX_KEYS[symbol_key]
+    await _load_upstox_instruments(exchange.upper())
+    return _upstox_underlying_index.get(symbol_key) or await _resolve_upstox_instrument_key(underlying, "CASH", exchange)
+
+
+def _first_upstox_payload_value(data: dict | None) -> dict | None:
+    if not isinstance(data, dict) or not data:
+        return None
+    first = next(iter(data.values()))
+    return first if isinstance(first, dict) else None
+
+
+def _normalize_upstox_quote(
+    ticker: str,
+    exchange: str,
+    segment: str,
+    quote: dict,
+    instrument_key: str,
+) -> dict:
+    ohlc = quote.get("ohlc") if isinstance(quote.get("ohlc"), dict) else {}
+    depth = quote.get("depth") if isinstance(quote.get("depth"), dict) else {}
+    buy_depth = depth.get("buy", []) if isinstance(depth.get("buy"), list) else []
+    sell_depth = depth.get("sell", []) if isinstance(depth.get("sell"), list) else []
+    last_price = _to_float(quote.get("last_price"), 0)
+    close = _to_float(ohlc.get("close") or quote.get("cp"), last_price)
+    change = _to_float(quote.get("net_change"), last_price - close if last_price and close else 0)
+    change_pct = (change / close * 100) if close else 0
+    return {
+        "source": "upstox",
+        "ticker": ticker.upper(),
+        "exchange": exchange.upper(),
+        "segment": segment.upper(),
+        "instrumentKey": instrument_key,
+        "ltp": last_price,
+        "change": round(change, 2),
+        "changePercent": round(change_pct, 2),
+        "open": _to_float(ohlc.get("open"), last_price),
+        "high": _to_float(ohlc.get("high"), last_price),
+        "low": _to_float(ohlc.get("low"), last_price),
+        "close": close,
+        "volume": int(_to_float(quote.get("volume"), 0)),
+        "bidPrice": _to_float(buy_depth[0].get("price"), 0) if buy_depth else 0,
+        "bidQty": int(_to_float(buy_depth[0].get("quantity"), 0)) if buy_depth else 0,
+        "offerPrice": _to_float(sell_depth[0].get("price"), 0) if sell_depth else 0,
+        "offerQty": int(_to_float(sell_depth[0].get("quantity"), 0)) if sell_depth else 0,
+        "totalBuyQty": int(_to_float(quote.get("total_buy_quantity"), 0)),
+        "totalSellQty": int(_to_float(quote.get("total_sell_quantity"), 0)),
+        "upperCircuit": _to_float(quote.get("upper_circuit_limit"), 0),
+        "lowerCircuit": _to_float(quote.get("lower_circuit_limit"), 0),
+        "week52High": _to_float(quote.get("week_52_high"), 0),
+        "week52Low": _to_float(quote.get("week_52_low"), 0),
+        "openInterest": _to_float(quote.get("oi"), 0),
+        "oiDayChange": 0,
+        "impliedVolatility": 0,
+        "lastTradeTime": quote.get("last_trade_time", quote.get("timestamp", "")),
+        "depth": depth,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+async def _upstox_full_quote(
+    trading_symbol: str,
+    segment: str = "CASH",
+    exchange: str = "NSE",
+) -> dict | None:
+    if not _is_upstox_configured():
+        return None
+    instrument_key = await _resolve_upstox_instrument_key(trading_symbol, segment, exchange)
+    if not instrument_key:
+        return None
+    data = await _upstox_get("/v2/market-quote/quotes", {"instrument_key": instrument_key})
+    quote = _first_upstox_payload_value(data)
+    if not quote:
+        return None
+    return _normalize_upstox_quote(trading_symbol, exchange, segment, quote, instrument_key)
+
+
+async def _upstox_batch_ltp(segment: str, exchange_symbols: str) -> dict | None:
+    if not _is_upstox_configured():
+        return None
+    symbols = [part.strip().upper() for part in exchange_symbols.split(",") if part.strip()]
+    if not symbols:
+        return None
+    resolved: list[tuple[str, str]] = []
+    for exchange_symbol in symbols:
+        exchange, _, ticker = exchange_symbol.partition("_")
+        key = await _resolve_upstox_instrument_key(ticker or exchange_symbol, segment, exchange or "NSE")
+        if key:
+            resolved.append((exchange_symbol, key))
+    if not resolved:
+        return None
+    data = await _upstox_get("/v3/market-quote/ltp", {"instrument_key": ",".join(key for _, key in resolved)})
+    if not isinstance(data, dict):
+        return None
+    by_token = {
+        str(item.get("instrument_token") or ""): item
+        for item in data.values()
+        if isinstance(item, dict)
+    }
+    prices: dict[str, float] = {}
+    for exchange_symbol, key in resolved:
+        item = by_token.get(key)
+        if item:
+            prices[exchange_symbol] = _to_float(item.get("last_price"), 0)
+    return {"source": "upstox", "prices": prices} if prices else None
+
+
+async def _upstox_batch_ohlc(segment: str, exchange_symbols: str) -> dict | None:
+    if not _is_upstox_configured():
+        return None
+    symbols = [part.strip().upper() for part in exchange_symbols.split(",") if part.strip()]
+    if not symbols:
+        return None
+    resolved: list[tuple[str, str]] = []
+    for exchange_symbol in symbols:
+        exchange, _, ticker = exchange_symbol.partition("_")
+        key = await _resolve_upstox_instrument_key(ticker or exchange_symbol, segment, exchange or "NSE")
+        if key:
+            resolved.append((exchange_symbol, key))
+    if not resolved:
+        return None
+    data = await _upstox_get(
+        "/v3/market-quote/ohlc",
+        {"instrument_key": ",".join(key for _, key in resolved), "interval": "1d"},
+    )
+    if not isinstance(data, dict):
+        return None
+    by_token = {
+        str(item.get("instrument_token") or ""): item
+        for item in data.values()
+        if isinstance(item, dict)
+    }
+    ohlc_out: dict[str, dict] = {}
+    for exchange_symbol, key in resolved:
+        item = by_token.get(key)
+        if not item:
+            continue
+        live = item.get("live_ohlc") if isinstance(item.get("live_ohlc"), dict) else {}
+        prev = item.get("prev_ohlc") if isinstance(item.get("prev_ohlc"), dict) else {}
+        source_ohlc = live or prev
+        last_price = _to_float(item.get("last_price"), 0)
+        prev_close = _to_float(prev.get("close"), 0)
+        ohlc_out[exchange_symbol] = {
+            "open": _to_float(source_ohlc.get("open"), last_price),
+            "high": _to_float(source_ohlc.get("high"), last_price),
+            "low": _to_float(source_ohlc.get("low"), last_price),
+            "close": prev_close or _to_float(source_ohlc.get("close"), last_price),
+            "volume": int(_to_float(source_ohlc.get("volume") or item.get("volume"), 0)),
+        }
+    return {"source": "upstox", "ohlc": ohlc_out} if ohlc_out else None
+
+
+def _upstox_iso_to_epoch_seconds(value: str) -> int:
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return int(time.time())
+
+
+async def _upstox_candles(
+    ticker: str,
+    tf: str = "1M",
+    segment: str = "CASH",
+    exchange: str = "NSE",
+    interval: int | None = None,
+) -> list[CandleData] | None:
+    if not _is_upstox_configured():
+        return None
+    if segment == "COMMODITY" or exchange.upper() == "MCX":
+        return None
+    instrument_key = await _resolve_upstox_instrument_key(ticker, segment, exchange)
+    if not instrument_key:
+        return None
+    encoded_key = quote(instrument_key, safe="")
+
+    tf_config = {
+        "1D":  {"interval": 1,    "days": 1},
+        "1W":  {"interval": 15,   "days": 7},
+        "1M":  {"interval": 60,   "days": 30},
+        "3M":  {"interval": 240,  "days": 90},
+        "6M":  {"interval": 1,    "days": 180, "unit": "days"},
+        "1Y":  {"interval": 1,    "days": 365, "unit": "days"},
+        "ALL": {"interval": 1,    "days": 1825, "unit": "days"},
+    }
+    cfg = tf_config.get(tf.upper(), tf_config["1M"]).copy()
+    if interval is not None and interval > 0:
+        if interval >= 1440:
+            cfg = {**cfg, "interval": 1, "unit": "days"}
+        else:
+            cfg = {**cfg, "interval": max(1, min(interval, 300)), "unit": "minutes"}
+
+    if tf.upper() == "1D":
+        unit = "minutes" if int(cfg["interval"]) <= 300 else "days"
+        path = f"/v3/historical-candle/intraday/{encoded_key}/{unit}/{cfg['interval']}"
+        data = await _upstox_get(path)
+    else:
+        unit = str(cfg.get("unit") or ("minutes" if int(cfg["interval"]) <= 300 else "days"))
+        candle_interval = int(cfg["interval"]) if unit != "days" else 1
+        to_date = datetime.now(IST).strftime("%Y-%m-%d")
+        from_date = (datetime.now(IST) - timedelta(days=int(cfg["days"]))).strftime("%Y-%m-%d")
+        data = await _upstox_get(
+            f"/v3/historical-candle/{encoded_key}/{unit}/{candle_interval}/{to_date}/{from_date}"
+        )
+
+    raw_candles = data.get("candles") if isinstance(data, dict) else None
+    if not isinstance(raw_candles, list) or not raw_candles:
+        return None
+
+    result: list[CandleData] = []
+    for candle in raw_candles:
+        if not isinstance(candle, list) or len(candle) < 5:
+            continue
+        result.append(CandleData(
+            time=_upstox_iso_to_epoch_seconds(str(candle[0])),
+            open=round(_to_float(candle[1]), 2),
+            high=round(_to_float(candle[2]), 2),
+            low=round(_to_float(candle[3]), 2),
+            close=round(_to_float(candle[4]), 2),
+            volume=int(_to_float(candle[5] if len(candle) > 5 else 0, 0)),
+        ))
+    result.sort(key=lambda c: c.time)
+    return result or None
+
+
+async def _upstox_option_chain(underlying: str, expiry_date: str, exchange: str = "NSE") -> dict | None:
+    if not _is_upstox_configured():
+        return None
+    underlying_key = await _resolve_upstox_underlying_key(underlying, exchange)
+    if not underlying_key:
+        return None
+    data = await _upstox_get("/v2/option/chain", {
+        "instrument_key": underlying_key,
+        "expiry_date": expiry_date,
+    })
+    if not isinstance(data, list) or not data:
+        return None
+
+    underlying_symbol = underlying.upper()
+    expiry_code = _upstox_expiry_code(expiry_date)
+    strikes: list[dict] = []
+    underlying_ltp = 0.0
+
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        strike = _to_float(row.get("strike_price"), 0)
+        if strike <= 0:
+            continue
+        underlying_ltp = underlying_ltp or _to_float(row.get("underlying_spot_price"), 0)
+        entry = {"strikePrice": strike}
+        for upstox_key, local_side in (("call_options", "CE"), ("put_options", "PE")):
+            side = row.get(upstox_key)
+            if not isinstance(side, dict):
+                continue
+            md = side.get("market_data") if isinstance(side.get("market_data"), dict) else {}
+            greeks = side.get("option_greeks") if isinstance(side.get("option_greeks"), dict) else {}
+            open_interest = _to_float(md.get("oi"), 0)
+            prev_oi = _to_float(md.get("prev_oi"), open_interest)
+            local_symbol = f"{underlying_symbol}{expiry_code}{int(strike)}{local_side}"
+            entry[local_side] = {
+                "tradingSymbol": local_symbol,
+                "instrumentKey": side.get("instrument_key"),
+                "ltp": _to_float(md.get("ltp"), 0),
+                "change": round(_to_float(md.get("ltp"), 0) - _to_float(md.get("close_price"), 0), 2),
+                "changePct": 0,
+                "openInterest": open_interest,
+                "changeinOpenInterest": open_interest - prev_oi,
+                "volume": _to_float(md.get("volume"), 0),
+                "greeks": {
+                    "iv": _to_float(greeks.get("iv"), 0),
+                    "delta": _to_float(greeks.get("delta"), 0),
+                    "gamma": _to_float(greeks.get("gamma"), 0),
+                    "theta": _to_float(greeks.get("theta"), 0),
+                    "vega": _to_float(greeks.get("vega"), 0),
+                },
+                "lotSize": MOCK_FNO_UNDERLYINGS.get(underlying_symbol, {"lotSize": 25})["lotSize"],
+            }
+        if "CE" in entry or "PE" in entry:
+            strikes.append(entry)
+
+    strikes.sort(key=lambda item: item["strikePrice"])
+    return {
+        "source": "upstox",
+        "underlying": underlying_symbol,
+        "underlyingLtp": underlying_ltp,
+        "expiryDate": expiry_date,
+        "strikes": strikes,
+    } if strikes else None
 
 
 def _parse_numeric_text(value: str | None) -> float:
@@ -1097,56 +1918,83 @@ def root():
         "service": "EquityFlow API",
         "status": "running",
         "version": "2.0.0",
-        "groww_connected": _is_api_configured(),
+        "preferred_provider": _market_provider_order()[0],
+        "upstox_connected": _is_upstox_configured(),
+        "groww_connected": _is_api_configured() or bool(GROWW_ACCESS_TOKEN),
     }
 
 
 # â”€â”€â”€ Health / Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/api/status")
 async def api_status():
-    """Check if Groww API connection is working."""
+    """Check configured market-data providers."""
     now_ts = time.time()
-    cooldown_remaining = max(0, int(_groww_rate_limited_until - now_ts))
+    groww_cooldown = max(0, int(_groww_rate_limited_until - now_ts))
+    upstox_cooldown = max(0, int(_upstox_rate_limited_until - now_ts))
+    upstox_status = {
+        "configured": _is_upstox_configured(),
+        "connected": _is_upstox_configured() and upstox_cooldown == 0,
+        "auth_mode": "access_token" if _is_upstox_configured() else "",
+        "rate_limited_for_sec": upstox_cooldown,
+        "last_error": _upstox_last_error,
+        "last_success_at": _upstox_last_success_at,
+    }
+
     degraded_reason = ""
+    groww_status: dict
     if not _is_api_configured():
         if GROWW_ACCESS_TOKEN:
-            return {
-                "connected": True,
+            groww_status = {
+                "connected": groww_cooldown == 0,
+                "configured": True,
                 "auth_mode": "access_token",
-                "degraded_reason": degraded_reason,
-                "rate_limited_for_sec": cooldown_remaining,
+                "rate_limited_for_sec": groww_cooldown,
                 "last_error": _groww_last_error,
                 "last_success_at": _groww_last_success_at,
             }
-        degraded_reason = "Missing GROWW_API_KEY or GROWW_API_SECRET"
-        return {
-            "connected": False,
-            "reason": degraded_reason,
-            "degraded_reason": degraded_reason,
-            "rate_limited_for_sec": cooldown_remaining,
-            "last_error": _groww_last_error,
-            "last_success_at": _groww_last_success_at,
-        }
-    token = await _get_access_token()
-    if token:
-        if cooldown_remaining > 0:
-            degraded_reason = f"Groww rate limited for {cooldown_remaining}s"
-        return {
-            "connected": True,
+        else:
+            groww_status = {
+                "connected": False,
+                "configured": False,
+                "reason": "Missing GROWW_API_KEY or GROWW_API_SECRET",
+                "rate_limited_for_sec": groww_cooldown,
+                "last_error": _groww_last_error,
+                "last_success_at": _groww_last_success_at,
+            }
+    else:
+        token = await _get_access_token()
+        groww_status = {
+            "connected": bool(token) and groww_cooldown == 0,
+            "configured": True,
             "auth_mode": "api_key_secret" if GROWW_API_KEY and GROWW_API_SECRET else "access_token",
-            "degraded_reason": degraded_reason,
-            "rate_limited_for_sec": cooldown_remaining,
+            "reason": "" if token else "Token exchange failed",
+            "rate_limited_for_sec": groww_cooldown,
             "last_error": _groww_last_error,
             "last_success_at": _groww_last_success_at,
         }
-    degraded_reason = "Token exchange failed"
+
+    preferred = _market_provider_order()[0]
+    connected = bool(upstox_status["connected"] or groww_status["connected"])
+    if preferred == "upstox" and not upstox_status["configured"]:
+        degraded_reason = "UPSTOX_ACCESS_TOKEN missing; falling back to Groww"
+    elif preferred == "upstox" and upstox_cooldown:
+        degraded_reason = f"Upstox rate limited for {upstox_cooldown}s"
+    elif preferred == "groww" and groww_cooldown:
+        degraded_reason = f"Groww rate limited for {groww_cooldown}s"
+
     return {
-        "connected": False,
-        "reason": degraded_reason,
+        "connected": connected,
+        "provider": preferred,
+        "provider_order": _market_provider_order(),
+        "auth_mode": "upstox_access_token" if upstox_status["configured"] else groww_status.get("auth_mode", ""),
         "degraded_reason": degraded_reason,
-        "rate_limited_for_sec": cooldown_remaining,
-        "last_error": _groww_last_error,
-        "last_success_at": _groww_last_success_at,
+        "rate_limited_for_sec": max(upstox_cooldown, groww_cooldown),
+        "last_error": _upstox_last_error or _groww_last_error,
+        "last_success_at": _upstox_last_success_at or _groww_last_success_at,
+        "providers": {
+            "upstox": upstox_status,
+            "groww": groww_status,
+        },
     }
 
 
@@ -1161,6 +2009,11 @@ async def get_full_quote(
     Full market quote from Groww.
     GET https://api.groww.in/v1/live-data/quote?exchange=NSE&segment=CASH&trading_symbol=RELIANCE
     """
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_full_quote(trading_symbol, segment, exchange)
+        if upstox_data:
+            return upstox_data
+
     data = await _groww_get("/live-data/quote", {
         "exchange": exchange.upper(),
         "segment": segment.upper(),
@@ -1199,6 +2052,11 @@ async def get_full_quote(
             "timestamp": datetime.now().isoformat(),
         }
 
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_full_quote(trading_symbol, segment, exchange)
+        if upstox_data:
+            return upstox_data
+
     # No mock fallback â€” return error if API fails
     raise HTTPException(status_code=502, detail=f"Unable to fetch quote for {trading_symbol} from Groww API")
 
@@ -1213,12 +2071,22 @@ async def get_ltp(
     Batch LTP for up to 50 instruments.
     GET https://api.groww.in/v1/live-data/ltp?segment=CASH&exchange_symbols=NSE_RELIANCE,BSE_SENSEX
     """
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_batch_ltp(segment.upper(), exchange_symbols.upper())
+        if upstox_data:
+            return upstox_data
+
     data = await _groww_get("/live-data/ltp", {
         "segment": segment.upper(),
         "exchange_symbols": exchange_symbols.upper(),
     })
     if data:
         return {"source": "groww", "prices": data}
+
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_batch_ltp(segment.upper(), exchange_symbols.upper())
+        if upstox_data:
+            return upstox_data
 
     # No mock fallback
     return {"source": "error", "prices": {}}
@@ -1234,12 +2102,22 @@ async def get_ohlc(
     Batch OHLC for instruments.
     GET https://api.groww.in/v1/live-data/ohlc?segment=CASH&exchange_symbols=NSE_RELIANCE
     """
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_batch_ohlc(segment.upper(), exchange_symbols.upper())
+        if upstox_data:
+            return upstox_data
+
     data = await _groww_get("/live-data/ohlc", {
         "segment": segment.upper(),
         "exchange_symbols": exchange_symbols.upper(),
     })
     if data:
         return {"source": "groww", "ohlc": data}
+
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_batch_ohlc(segment.upper(), exchange_symbols.upper())
+        if upstox_data:
+            return upstox_data
 
     # No mock fallback
     return {"source": "error", "ohlc": {}}
@@ -1256,6 +2134,11 @@ async def get_option_chain(
     Full option chain with greeks.
     GET https://api.groww.in/v1/option-chain/exchange/{exchange}/underlying/{underlying}?expiry_date={expiry_date}
     """
+    if _market_provider_order()[0] == "upstox":
+        upstox_chain = await _upstox_option_chain(underlying, expiry_date, exchange)
+        if upstox_chain:
+            return upstox_chain
+
     data = await _groww_get(
         f"/option-chain/exchange/{exchange.upper()}/underlying/{underlying.upper()}",
         {"expiry_date": expiry_date},
@@ -1341,6 +2224,11 @@ async def get_option_chain(
                 "expiryDate": expiry_date,
                 "strikes": strikes_list,
             }
+
+    if _market_provider_order()[0] != "upstox":
+        upstox_chain = await _upstox_option_chain(underlying, expiry_date, exchange)
+        if upstox_chain:
+            return upstox_chain
 
     # â”€â”€ Mock fallback: generate synthetic option chain â”€â”€
     underlying_info = MOCK_FNO_UNDERLYINGS.get(underlying.upper())
@@ -1579,6 +2467,24 @@ async def get_stock_quote(ticker: str):
     """Get real-time stock quote â€” backwards-compatible endpoint."""
     ticker = ticker.upper()
 
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_full_quote(ticker, "CASH", "NSE")
+        if upstox_data:
+            return StockQuote(
+                ticker=ticker,
+                name=MOCK_STOCKS.get(ticker, {}).get("name", ticker),
+                exchange="NSE",
+                ltp=upstox_data.get("ltp", 0),
+                change=upstox_data.get("change", 0),
+                changePercent=upstox_data.get("changePercent", 0),
+                open=upstox_data.get("open", 0),
+                high=upstox_data.get("high", 0),
+                low=upstox_data.get("low", 0),
+                close=upstox_data.get("close", 0),
+                volume=upstox_data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+            )
+
     # Try Groww official API
     data = await _groww_get("/live-data/quote", {
         "exchange": "NSE",
@@ -1602,6 +2508,24 @@ async def get_stock_quote(ticker: str):
             timestamp=datetime.now().isoformat(),
         )
 
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_full_quote(ticker, "CASH", "NSE")
+        if upstox_data:
+            return StockQuote(
+                ticker=ticker,
+                name=MOCK_STOCKS.get(ticker, {}).get("name", ticker),
+                exchange="NSE",
+                ltp=upstox_data.get("ltp", 0),
+                change=upstox_data.get("change", 0),
+                changePercent=upstox_data.get("changePercent", 0),
+                open=upstox_data.get("open", 0),
+                high=upstox_data.get("high", 0),
+                low=upstox_data.get("low", 0),
+                close=upstox_data.get("close", 0),
+                volume=upstox_data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+            )
+
     raise HTTPException(status_code=502, detail=f"Unable to fetch quote for {ticker} from Groww API")
 
 
@@ -1609,13 +2533,38 @@ async def get_stock_quote(ticker: str):
 @app.get("/api/fno/resolve")
 async def resolve_fno_symbol(ticker: str = Query(..., description="Simplified ticker like NIFTY25300CE")):
     """
-    Resolve a simplified F&O ticker to the nearest valid Groww trading symbol.
-    Returns the FNO trading symbol for the nearest non-expired contract.
+    Resolve a simplified F&O ticker to the preferred provider's nearest non-expired contract.
     """
     simplified = ticker.upper().replace(" ", "").replace("-", "")
+
+    def _upstox_resolution_payload(candidate: dict) -> dict:
+        return {
+            "resolved": True,
+            "source": "upstox",
+            "ticker": ticker,
+            "tradingSymbol": candidate.get("tradingSymbol"),
+            "instrumentKey": candidate.get("instrumentKey"),
+            "expiryDate": candidate.get("expiryDate"),
+            "underlying": candidate.get("underlying"),
+            "instrumentType": candidate.get("instrumentType"),
+            "strikePrice": candidate.get("strikePrice"),
+            "lotSize": candidate.get("lotSize"),
+            "candidates": len(_upstox_derivative_index.get(_upstox_symbol_key(simplified), [])),
+        }
+
+    if _market_provider_order()[0] == "upstox":
+        await _load_upstox_instruments("NSE")
+        upstox_candidate = _choose_upstox_derivative(_upstox_derivative_index.get(_upstox_symbol_key(simplified), []))
+        if upstox_candidate:
+            return _upstox_resolution_payload(upstox_candidate)
+
     candidates = _fno_resolve_index.get(simplified, [])
 
     if not candidates:
+        await _load_upstox_instruments("NSE")
+        upstox_candidate = _choose_upstox_derivative(_upstox_derivative_index.get(_upstox_symbol_key(simplified), []))
+        if upstox_candidate:
+            return _upstox_resolution_payload(upstox_candidate)
         return {"resolved": False, "ticker": ticker, "tradingSymbol": None, "candidates": 0}
 
     today = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
@@ -1653,19 +2602,36 @@ async def get_fno_quote(ticker: str):
         "MIDCPNIFTY": "NSE_NIFTYMIDCAP",
         "NIFTYNXT50": "NSE_NIFTYNXT50",
     }
+    is_contract = ticker.endswith("FUT") or ((ticker.endswith("CE") or ticker.endswith("PE")) and bool(re.search(r"\d", ticker)))
+    upstox_segment = "FNO" if is_contract else "CASH"
+
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_full_quote(ticker, upstox_segment, "NSE")
+        if upstox_data:
+            base_info = MOCK_FNO_UNDERLYINGS.get(ticker, {"name": ticker})
+            return StockQuote(
+                ticker=ticker,
+                name=base_info.get("name", ticker),
+                exchange="NSE",
+                ltp=upstox_data.get("ltp", 0),
+                change=upstox_data.get("change", 0),
+                changePercent=upstox_data.get("changePercent", 0),
+                open=upstox_data.get("open", 0),
+                high=upstox_data.get("high", 0),
+                low=upstox_data.get("low", 0),
+                close=upstox_data.get("close", 0),
+                volume=upstox_data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+            )
 
     # For stocks, get CASH segment quote; for indices try INDEX segment
     if is_index:
         symbol = index_symbol_map.get(ticker)
         if symbol:
-            ltp_resp = await _groww_get("/live-data/ltp", {
-                "segment": "CASH",
-                "exchange_symbols": symbol,
-            })
-            ohlc_resp = await _groww_get("/live-data/ohlc", {
-                "segment": "CASH",
-                "exchange_symbols": symbol,
-            })
+            ltp_resp, ohlc_resp = await asyncio.gather(
+                _fetch_batch_ltp("CASH", [symbol]),
+                _fetch_batch_ohlc("CASH", [symbol]),
+            )
             if ltp_resp and isinstance(ltp_resp, dict):
                 ltp = ltp_resp.get(symbol)
                 if isinstance(ltp, (int, float)) and ltp > 0:
@@ -1710,7 +2676,54 @@ async def get_fno_quote(ticker: str):
                 timestamp=datetime.now().isoformat(),
             )
 
-    # No mock fallback
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_full_quote(ticker, upstox_segment, "NSE")
+        if upstox_data:
+            base_info = MOCK_FNO_UNDERLYINGS.get(ticker, {"name": ticker})
+            return StockQuote(
+                ticker=ticker,
+                name=base_info.get("name", ticker),
+                exchange="NSE",
+                ltp=upstox_data.get("ltp", 0),
+                change=upstox_data.get("change", 0),
+                changePercent=upstox_data.get("changePercent", 0),
+                open=upstox_data.get("open", 0),
+                high=upstox_data.get("high", 0),
+                low=upstox_data.get("low", 0),
+                close=upstox_data.get("close", 0),
+                volume=upstox_data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+            )
+
+    fallback_key = ticker[:-3] if ticker.endswith("FUT") else ticker
+    if fallback_key not in MOCK_FNO_UNDERLYINGS:
+        for underlying in sorted(MOCK_FNO_UNDERLYINGS.keys(), key=len, reverse=True):
+            if ticker.startswith(underlying):
+                fallback_key = underlying
+                break
+
+    base_info = MOCK_FNO_UNDERLYINGS.get(fallback_key)
+    if base_info:
+        cache_key = f"NSE_{fallback_key}"
+        ltp = float(_sse_groww_index_cache.get(cache_key, 0) or base_info["base"])
+        prev_close = float(base_info["base"])
+        change = round(ltp - prev_close, 2)
+        change_pct = round((change / prev_close) * 100, 2) if prev_close else 0
+        return StockQuote(
+            ticker=ticker,
+            name=base_info.get("name", fallback_key),
+            exchange="NSE",
+            ltp=ltp,
+            change=change,
+            changePercent=change_pct,
+            open=prev_close,
+            high=max(ltp, prev_close),
+            low=min(ltp, prev_close),
+            close=prev_close,
+            volume=0,
+            timestamp=datetime.now().isoformat(),
+        )
+
     raise HTTPException(status_code=502, detail=f"Unable to fetch F&O quote for {ticker} from Groww API")
 
 
@@ -1718,6 +2731,29 @@ async def get_fno_quote(ticker: str):
 async def get_commodity_quote(ticker: str):
     """Get Commodity quote (MCX segment)."""
     ticker = ticker.upper()
+
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_full_quote(ticker, "COMMODITY", "MCX")
+        if upstox_data:
+            comm_info = next((c for c in MOCK_COMMODITIES if c["ticker"] == ticker), {})
+            return CommodityQuote(
+                ticker=ticker,
+                name=comm_info.get("name", ticker),
+                exchange="MCX",
+                ltp=upstox_data.get("ltp", 0),
+                change=upstox_data.get("change", 0),
+                changePercent=upstox_data.get("changePercent", 0),
+                open=upstox_data.get("open", 0),
+                high=upstox_data.get("high", 0),
+                low=upstox_data.get("low", 0),
+                close=upstox_data.get("close", 0),
+                volume=upstox_data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+                category=comm_info.get("category", "Unknown"),
+                unit=comm_info.get("unit", "1 Lot"),
+                expiry=comm_info.get("expiry", "2026-02-28"),
+                lotSize=comm_info.get("lotSize", 1),
+            )
 
     # Try Groww API â€” COMMODITY segment
     data = await _groww_get("/live-data/quote", {
@@ -1746,6 +2782,29 @@ async def get_commodity_quote(ticker: str):
             expiry=comm_info.get("expiry", "2026-02-28"),
             lotSize=comm_info.get("lotSize", 1),
         )
+
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_full_quote(ticker, "COMMODITY", "MCX")
+        if upstox_data:
+            comm_info = next((c for c in MOCK_COMMODITIES if c["ticker"] == ticker), {})
+            return CommodityQuote(
+                ticker=ticker,
+                name=comm_info.get("name", ticker),
+                exchange="MCX",
+                ltp=upstox_data.get("ltp", 0),
+                change=upstox_data.get("change", 0),
+                changePercent=upstox_data.get("changePercent", 0),
+                open=upstox_data.get("open", 0),
+                high=upstox_data.get("high", 0),
+                low=upstox_data.get("low", 0),
+                close=upstox_data.get("close", 0),
+                volume=upstox_data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+                category=comm_info.get("category", "Unknown"),
+                unit=comm_info.get("unit", "1 Lot"),
+                expiry=comm_info.get("expiry", "2026-02-28"),
+                lotSize=comm_info.get("lotSize", 1),
+            )
 
     raise HTTPException(status_code=502, detail=f"Unable to fetch commodity quote for {ticker} from Groww API")
 
@@ -1782,29 +2841,17 @@ class StockListItem(BaseModel):
 
 @app.get("/api/stocks", response_model=list[StockListItem])
 async def get_all_stocks():
-    """Get full stock list with live LTP data from Groww (batch)."""
+    """Get full stock list with live LTP data from the preferred provider."""
     # Build the list of exchange_symbols for batch LTP
     tickers = list(MOCK_STOCKS.keys())
     ltp_data: dict = {}
     ohlc_data: dict = {}
 
-    # Groww batch LTP supports up to 50 instruments per call
     for i in range(0, len(tickers), 50):
         batch = tickers[i:i+50]
-        symbols = ",".join(f"NSE_{t}" for t in batch)
-        data = await _groww_get("/live-data/ltp", {
-            "segment": "CASH",
-            "exchange_symbols": symbols,
-        })
-        if data and isinstance(data, dict):
-            ltp_data.update(data)
-
-        ohlc_resp = await _groww_get("/live-data/ohlc", {
-            "segment": "CASH",
-            "exchange_symbols": symbols,
-        })
-        if ohlc_resp and isinstance(ohlc_resp, dict):
-            ohlc_data.update(ohlc_resp)
+        symbols = [f"NSE_{t}" for t in batch]
+        ltp_data.update(await _fetch_batch_ltp("CASH", symbols))
+        ohlc_data.update(await _fetch_batch_ohlc("CASH", symbols))
 
     results = []
     for ticker, info in MOCK_STOCKS.items():
@@ -1877,28 +2924,39 @@ INDEX_GROWW_SYMBOLS = {
 
 @app.get("/api/indices", response_model=list[MarketIndex])
 async def get_indices():
-    """Get market indices â€” tries Groww LTP for NIFTY/SENSEX, else mocks."""
-    data = await _groww_get("/live-data/ltp", {
-        "segment": "CASH",
-        "exchange_symbols": "NSE_NIFTY,BSE_SENSEX,NSE_BANKNIFTY",
-    })
-    if data:
-        nifty = data.get("NSE_NIFTY", 0)
-        sensex = data.get("BSE_SENSEX", 0)
-        banknifty = data.get("NSE_BANKNIFTY", 0)
-        return [
-            MarketIndex(name="NIFTY 50", value=nifty, change=0, changePercent=0),
-            MarketIndex(name="SENSEX", value=sensex, change=0, changePercent=0),
-            MarketIndex(name="NIFTY BANK", value=banknifty, change=0, changePercent=0),
-        ]
-
-    return []  # No mock fallback
+    """Get market indices from the preferred provider."""
+    cash_symbols = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "CASH"]
+    ltp_data, ohlc_data = await asyncio.gather(
+        _fetch_batch_ltp("CASH", cash_symbols),
+        _fetch_batch_ohlc("CASH", cash_symbols),
+    )
+    results: list[MarketIndex] = []
+    for name, info in MOCK_INDEX_DATA.items():
+        idx_info = INDEX_GROWW_SYMBOLS.get(name)
+        if not idx_info or idx_info["segment"] != "CASH":
+            continue
+        cache_key = idx_info.get("resp_key", idx_info["sym"])
+        live_val = ltp_data.get(cache_key) or ltp_data.get(idx_info["sym"])
+        if isinstance(live_val, (int, float)) and live_val > 0:
+            prev_close = _extract_prev_close(
+                ohlc_data.get(cache_key) or ohlc_data.get(idx_info["sym"]),
+                float(info.get("base", live_val)),
+            )
+            change = round(float(live_val) - prev_close, 2)
+            change_pct = round((change / prev_close) * 100, 2) if prev_close else 0
+            results.append(MarketIndex(name=name, value=float(live_val), change=change, changePercent=change_pct))
+    return results
 
 
 @app.get("/api/candles/{ticker}", response_model=list[CandleData])
 async def get_candles(ticker: str, tf: str = "1M", segment: str = "CASH", exchange: str = "NSE", interval: int | None = None):
     """Get candle/OHLC data for charting â€” uses Groww charting API only, no mock fallback."""
     ticker = ticker.upper()
+
+    if _market_provider_order()[0] == "upstox":
+        upstox_candle_data = await _upstox_candles(ticker, tf, segment.upper(), exchange.upper(), interval)
+        if upstox_candle_data:
+            return upstox_candle_data
 
     # Map timeframe to Groww interval (minutes) and lookback
     tf_config = {
@@ -2047,6 +3105,11 @@ async def get_candles(ticker: str, tf: str = "1M", segment: str = "CASH", exchan
         except Exception:
             continue
 
+    if _market_provider_order()[0] != "upstox":
+        upstox_candle_data = await _upstox_candles(ticker, tf, segment.upper(), exchange.upper(), interval)
+        if upstox_candle_data:
+            return upstox_candle_data
+
     # No mock fallback â€” return empty list if API fails
     return []
 
@@ -2058,10 +3121,17 @@ async def get_stock_details(ticker: str):
     """Get detailed stock info: circuit limits, 52W range, fundamentals, technicals."""
     ticker = ticker.upper()
 
-    # Get full quote from Groww for circuit limits and depth
-    data = await _groww_get("/live-data/quote", {
-        "exchange": "NSE", "segment": "CASH", "trading_symbol": ticker,
-    })
+    # Get full quote from preferred provider for circuit limits and depth.
+    upstox_quote = None
+    data = None
+    if _market_provider_order()[0] == "upstox":
+        upstox_quote = await _upstox_full_quote(ticker, "CASH", "NSE")
+    if not upstox_quote:
+        data = await _groww_get("/live-data/quote", {
+            "exchange": "NSE", "segment": "CASH", "trading_symbol": ticker,
+        })
+    if not data and _market_provider_order()[0] != "upstox":
+        upstox_quote = await _upstox_full_quote(ticker, "CASH", "NSE")
 
     ohlc = {}
     upper_circuit = 0
@@ -2073,7 +3143,27 @@ async def get_stock_details(ticker: str):
     depth_buy = []
     depth_sell = []
 
-    if data:
+    if upstox_quote:
+        ohlc = {
+            "open": upstox_quote.get("open", 0),
+            "high": upstox_quote.get("high", 0),
+            "low": upstox_quote.get("low", 0),
+            "close": upstox_quote.get("close", 0),
+        }
+        upper_circuit = upstox_quote.get("upperCircuit", 0)
+        lower_circuit = upstox_quote.get("lowerCircuit", 0)
+        ltp = upstox_quote.get("ltp", 0)
+        volume = upstox_quote.get("volume", 0)
+        day_change = upstox_quote.get("change", 0)
+        day_change_pct = upstox_quote.get("changePercent", 0)
+        raw_depth = upstox_quote.get("depth", {})
+        for b in raw_depth.get("buy", []):
+            if b.get("price", 0) > 0:
+                depth_buy.append({"price": b["price"], "quantity": b["quantity"], "orders": b.get("orders", 0)})
+        for s in raw_depth.get("sell", []):
+            if s.get("price", 0) > 0:
+                depth_sell.append({"price": s["price"], "quantity": s["quantity"], "orders": s.get("orders", 0)})
+    elif data:
         ohlc = _parse_ohlc(data)
         upper_circuit = data.get("upper_circuit_limit", 0)
         lower_circuit = data.get("lower_circuit_limit", 0)
@@ -2093,24 +3183,35 @@ async def get_stock_details(ticker: str):
     week52_high = ohlc.get("high", ltp)
     week52_low = ohlc.get("low", ltp)
     try:
-        now_ms = int(time.time() * 1000)
-        start_ms = now_ms - 365 * 24 * 3600 * 1000
-        url = (
-            f"https://groww.in/v1/api/charting_service/v2/chart/exchange/NSE"
-            f"/segment/CASH/{ticker}?endTimeInMillis={now_ms}"
-            f"&intervalInMinutes=1440&startTimeInMillis={start_ms}"
-        )
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
-        if resp.status_code == 200:
-            cdata = resp.json().get("candles", [])
-            if cdata:
-                highs = [c[2] for c in cdata if len(c) >= 5]
-                lows = [c[3] for c in cdata if len(c) >= 5]
-                if highs:
-                    week52_high = max(highs)
-                if lows:
-                    week52_low = min(lows)
+        upstox_history = None
+        if _market_provider_order()[0] == "upstox":
+            upstox_history = await _upstox_candles(ticker, "1Y", "CASH", "NSE")
+        if upstox_history:
+            highs = [c.high for c in upstox_history]
+            lows = [c.low for c in upstox_history]
+            if highs:
+                week52_high = max(highs)
+            if lows:
+                week52_low = min(lows)
+        else:
+            now_ms = int(time.time() * 1000)
+            start_ms = now_ms - 365 * 24 * 3600 * 1000
+            url = (
+                f"https://groww.in/v1/api/charting_service/v2/chart/exchange/NSE"
+                f"/segment/CASH/{ticker}?endTimeInMillis={now_ms}"
+                f"&intervalInMinutes=1440&startTimeInMillis={start_ms}"
+            )
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url)
+            if resp.status_code == 200:
+                cdata = resp.json().get("candles", [])
+                if cdata:
+                    highs = [c[2] for c in cdata if len(c) >= 5]
+                    lows = [c[3] for c in cdata if len(c) >= 5]
+                    if highs:
+                        week52_high = max(highs)
+                    if lows:
+                        week52_low = min(lows)
     except Exception:
         pass
 
@@ -2163,8 +3264,21 @@ async def get_stock_details(ticker: str):
 
 @app.get("/api/depth/{ticker}", response_model=MarketDepth)
 async def get_depth(ticker: str):
-    """Get market depth from Groww only."""
+    """Get market depth from the preferred provider, falling back when available."""
     ticker = ticker.upper()
+
+    if _market_provider_order()[0] == "upstox":
+        upstox_data = await _upstox_full_quote(ticker, "CASH", "NSE")
+        depth = upstox_data.get("depth") if upstox_data else None
+        if isinstance(depth, dict):
+            bids = [DepthLevel(price=b.get("price", 0), quantity=b.get("quantity", 0), orders=b.get("orders", 1)) for b in depth.get("buy", [])]
+            asks = [DepthLevel(price=a.get("price", 0), quantity=a.get("quantity", 0), orders=a.get("orders", 1)) for a in depth.get("sell", [])]
+            return MarketDepth(
+                bids=bids,
+                asks=asks,
+                totalBidQty=sum(b.quantity for b in bids),
+                totalAskQty=sum(a.quantity for a in asks),
+            )
 
     # Try to get depth from full quote
     data = await _groww_get("/live-data/quote", {
@@ -2183,12 +3297,25 @@ async def get_depth(ticker: str):
             totalAskQty=sum(a.quantity for a in asks),
         )
 
+    if _market_provider_order()[0] != "upstox":
+        upstox_data = await _upstox_full_quote(ticker, "CASH", "NSE")
+        depth = upstox_data.get("depth") if upstox_data else None
+        if isinstance(depth, dict):
+            bids = [DepthLevel(price=b.get("price", 0), quantity=b.get("quantity", 0), orders=b.get("orders", 1)) for b in depth.get("buy", [])]
+            asks = [DepthLevel(price=a.get("price", 0), quantity=a.get("quantity", 0), orders=a.get("orders", 1)) for a in depth.get("sell", [])]
+            return MarketDepth(
+                bids=bids,
+                asks=asks,
+                totalBidQty=sum(b.quantity for b in bids),
+                totalAskQty=sum(a.quantity for a in asks),
+            )
+
     raise HTTPException(status_code=502, detail=f"Unable to fetch market depth for {ticker} from Groww API")
 
 
 @app.get("/api/sparkline/{ticker}")
 async def get_sparkline(ticker: str):
-    """Get sparkline data from Groww candles only."""
+    """Get sparkline data from preferred-provider candles."""
     ticker = ticker.upper()
     candles = await get_candles(ticker, tf="1D", segment="CASH", exchange="NSE", interval=5)
     if candles:
@@ -2207,28 +3334,23 @@ async def get_trending():
         "TITAN", "ETERNAL", "MARUTI", "HCLTECH", "NTPC",
     ]
 
-    # Try batch LTP for live data
-    symbols = ",".join(f"NSE_{t}" for t in trending_tickers)
-    ltp_data = await _groww_get("/live-data/ltp", {
-        "segment": "CASH",
-        "exchange_symbols": symbols,
-    })
-    ohlc_data = await _groww_get("/live-data/ohlc", {
-        "segment": "CASH",
-        "exchange_symbols": symbols,
-    })
+    symbols = [f"NSE_{t}" for t in trending_tickers]
+    ltp_data, ohlc_data = await asyncio.gather(
+        _fetch_batch_ltp("CASH", symbols),
+        _fetch_batch_ohlc("CASH", symbols),
+    )
 
     results = []
     for ticker in trending_tickers:
         if ticker not in MOCK_STOCKS:
             continue
         ltp_key = f"NSE_{ticker}"
-        live_ltp = ltp_data.get(ltp_key) if ltp_data and isinstance(ltp_data, dict) else None
+        live_ltp = ltp_data.get(ltp_key) if isinstance(ltp_data, dict) else None
 
         if live_ltp is not None and live_ltp > 0:
             info = MOCK_STOCKS[ticker]
             ltp_key = f"NSE_{ticker}"
-            ohlc_raw = ohlc_data.get(ltp_key) if ohlc_data and isinstance(ohlc_data, dict) else None
+            ohlc_raw = ohlc_data.get(ltp_key) if isinstance(ohlc_data, dict) else None
             prev_close = _extract_prev_close(ohlc_raw, float(live_ltp))
             ohlc = ohlc_raw if isinstance(ohlc_raw, dict) else {}
             open_p = float(ohlc.get("open", prev_close))
@@ -2258,7 +3380,7 @@ async def get_trending():
 
 
 # â”€â”€â”€ SSE: Real-time Price Stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Shared caches for SSE â€” Groww data is fetched in background
+# Shared caches for SSE market data.
 _sse_groww_cache: dict = {}           # Stock LTPs: {NSE_RELIANCE: 1450.80, ...}
 _sse_groww_commodity_cache: dict = {} # Commodity LTPs: {MCX_SILVER26MARFUT: 92345.0, ...}
 _sse_groww_index_cache: dict = {}     # Index LTPs: {NSE_NIFTY: 24856.15, ...}
@@ -2300,14 +3422,33 @@ async def _fetch_batch_ltp(segment: str, exchange_symbols: list[str]) -> dict:
     if not exchange_symbols:
         return {}
     out: dict = {}
-    for i in range(0, len(exchange_symbols), 50):
-        batch = exchange_symbols[i:i + 50]
+
+    async def _fetch_groww(batch_symbols: list[str]) -> dict:
         data = await _groww_get("/live-data/ltp", {
             "segment": segment,
-            "exchange_symbols": ",".join(batch),
+            "exchange_symbols": ",".join(batch_symbols),
         })
-        if isinstance(data, dict):
-            out.update(data)
+        return data if isinstance(data, dict) else {}
+
+    async def _fetch_upstox(batch_symbols: list[str]) -> dict:
+        data = await _upstox_batch_ltp(segment, ",".join(batch_symbols))
+        prices = data.get("prices") if isinstance(data, dict) else None
+        return prices if isinstance(prices, dict) else {}
+
+    for i in range(0, len(exchange_symbols), 50):
+        batch = exchange_symbols[i:i + 50]
+        if _market_provider_order()[0] == "upstox":
+            upstox_prices = await _fetch_upstox(batch)
+            out.update(upstox_prices)
+            missing = [symbol for symbol in batch if symbol not in upstox_prices]
+            if missing:
+                out.update(await _fetch_groww(missing))
+        else:
+            groww_prices = await _fetch_groww(batch)
+            out.update(groww_prices)
+            missing = [symbol for symbol in batch if symbol not in groww_prices]
+            if missing:
+                out.update(await _fetch_upstox(missing))
     return out
 
 
@@ -2315,14 +3456,33 @@ async def _fetch_batch_ohlc(segment: str, exchange_symbols: list[str]) -> dict:
     if not exchange_symbols:
         return {}
     out: dict = {}
-    for i in range(0, len(exchange_symbols), 50):
-        batch = exchange_symbols[i:i + 50]
+
+    async def _fetch_groww(batch_symbols: list[str]) -> dict:
         data = await _groww_get("/live-data/ohlc", {
             "segment": segment,
-            "exchange_symbols": ",".join(batch),
+            "exchange_symbols": ",".join(batch_symbols),
         })
-        if isinstance(data, dict):
-            out.update(data)
+        return data if isinstance(data, dict) else {}
+
+    async def _fetch_upstox(batch_symbols: list[str]) -> dict:
+        data = await _upstox_batch_ohlc(segment, ",".join(batch_symbols))
+        ohlc = data.get("ohlc") if isinstance(data, dict) else None
+        return ohlc if isinstance(ohlc, dict) else {}
+
+    for i in range(0, len(exchange_symbols), 50):
+        batch = exchange_symbols[i:i + 50]
+        if _market_provider_order()[0] == "upstox":
+            upstox_ohlc = await _fetch_upstox(batch)
+            out.update(upstox_ohlc)
+            missing = [symbol for symbol in batch if symbol not in upstox_ohlc]
+            if missing:
+                out.update(await _fetch_groww(missing))
+        else:
+            groww_ohlc = await _fetch_groww(batch)
+            out.update(groww_ohlc)
+            missing = [symbol for symbol in batch if symbol not in groww_ohlc]
+            if missing:
+                out.update(await _fetch_upstox(missing))
     return out
 
 
@@ -2449,11 +3609,17 @@ async def _build_workstation_snapshot(
     depth_payload = None
     if depth_symbol:
         depth_ticker = depth_symbol.upper().replace("NSE_", "").strip()
-        quote = await _groww_get("/live-data/quote", {
-            "exchange": "NSE",
-            "segment": "CASH",
-            "trading_symbol": depth_ticker,
-        })
+        quote = None
+        if _market_provider_order()[0] == "upstox":
+            quote = await _upstox_full_quote(depth_ticker, "CASH", "NSE")
+        if not quote:
+            quote = await _groww_get("/live-data/quote", {
+                "exchange": "NSE",
+                "segment": "CASH",
+                "trading_symbol": depth_ticker,
+            })
+        if not quote and _market_provider_order()[0] != "upstox":
+            quote = await _upstox_full_quote(depth_ticker, "CASH", "NSE")
         depth_payload = _extract_depth_payload(quote if isinstance(quote, dict) else None)
 
     status = await api_status()
@@ -2461,7 +3627,7 @@ async def _build_workstation_snapshot(
     if live_count == 0 and not status.get("degraded_reason"):
         status = {
             **status,
-            "degraded_reason": "No live market payload returned by Groww",
+            "degraded_reason": "No live market payload returned by configured providers",
         }
 
     return {
@@ -2498,7 +3664,7 @@ async def stream_workstation(
                 yield f"data: {json.dumps(snapshot)}\n\n"
                 equity_open = _is_equity_market_open()
                 commodity_open = _is_commodity_market_open()
-                await asyncio.sleep(1.0 if (equity_open or commodity_open) else 5.0)
+                await asyncio.sleep(3.0 if (equity_open or commodity_open) else 15.0)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -2521,43 +3687,18 @@ async def _refresh_groww_ohlc_cache(cash_syms: list[str]):
     try:
         ohlc_data: dict = {}
 
-        stock_tickers_ohlc = list(MOCK_STOCKS.keys())
-        stock_tasks = []
-        for i in range(0, len(stock_tickers_ohlc), 50):
-            batch = stock_tickers_ohlc[i:i + 50]
-            symbols = ",".join(f"NSE_{t}" for t in batch)
-            stock_tasks.append(_groww_get("/live-data/ohlc", {
-                "segment": "CASH",
-                "exchange_symbols": symbols,
-            }))
-        if stock_tasks:
-            stock_results = await asyncio.gather(*stock_tasks, return_exceptions=True)
-            for data in stock_results:
-                if isinstance(data, dict):
-                    ohlc_data.update(data)
-
+        stock_symbols = [f"NSE_{ticker}" for ticker in MOCK_STOCKS.keys()]
         comm_tickers_ohlc = [c["ticker"] for c in MOCK_COMMODITIES if c["category"] != "Electricity"]
-        comm_tasks = []
-        for i in range(0, len(comm_tickers_ohlc), 50):
-            batch = comm_tickers_ohlc[i:i + 50]
-            symbols = ",".join(f"MCX_{t}" for t in batch)
-            comm_tasks.append(_groww_get("/live-data/ohlc", {
-                "segment": "COMMODITY",
-                "exchange_symbols": symbols,
-            }))
-        if comm_tasks:
-            comm_results = await asyncio.gather(*comm_tasks, return_exceptions=True)
-            for data in comm_results:
-                if isinstance(data, dict):
-                    ohlc_data.update(data)
+        comm_symbols = [f"MCX_{ticker}" for ticker in comm_tickers_ohlc]
 
-        if cash_syms:
-            data = await _groww_get("/live-data/ohlc", {
-                "segment": "CASH",
-                "exchange_symbols": ",".join(cash_syms),
-            })
-            if isinstance(data, dict):
-                ohlc_data.update(data)
+        stock_ohlc, comm_ohlc, index_ohlc = await asyncio.gather(
+            _fetch_batch_ohlc("CASH", stock_symbols),
+            _fetch_batch_ohlc("COMMODITY", comm_symbols),
+            _fetch_batch_ohlc("CASH", cash_syms),
+        )
+        ohlc_data.update(stock_ohlc)
+        ohlc_data.update(comm_ohlc)
+        ohlc_data.update(index_ohlc)
 
         if ohlc_data:
             _sse_groww_ohlc_cache = ohlc_data
@@ -2571,28 +3712,16 @@ async def _refresh_groww_ohlc_cache(cash_syms: list[str]):
 
 
 async def _refresh_groww_ltp_cache():
-    """Refresh Groww LTP cache for stocks, commodities, and indices. Non-blocking."""
+    """Refresh LTP cache for stocks, commodities, and indices. Non-blocking."""
     global _sse_groww_cache, _sse_groww_commodity_cache, _sse_groww_index_cache
     global _sse_groww_ts, _sse_ohlc_ts, _sse_ohlc_task
+    cash_syms: list[str] = []
 
     # â”€â”€ 1. Stock LTPs (CASH segment) â”€â”€
     stock_tickers = list(MOCK_STOCKS.keys())
     ltp_data: dict = {}
     try:
-        stock_tasks = []
-        for i in range(0, len(stock_tickers), 50):
-            batch = stock_tickers[i:i + 50]
-            symbols = ",".join(f"NSE_{t}" for t in batch)
-            stock_tasks.append(_groww_get("/live-data/ltp", {
-                "segment": "CASH",
-                "exchange_symbols": symbols,
-            }))
-
-        if stock_tasks:
-            stock_results = await asyncio.gather(*stock_tasks, return_exceptions=True)
-            for data in stock_results:
-                if isinstance(data, dict):
-                    ltp_data.update(data)
+        ltp_data.update(await _fetch_batch_ltp("CASH", [f"NSE_{t}" for t in stock_tickers]))
 
         if ltp_data:
             _sse_groww_cache = ltp_data
@@ -2603,21 +3732,7 @@ async def _refresh_groww_ltp_cache():
     try:
         # Exclude Electricity â€” not available on Groww Trade API
         comm_tickers = [c["ticker"] for c in MOCK_COMMODITIES if c["category"] != "Electricity"]
-        comm_ltp: dict = {}
-        comm_tasks = []
-        for i in range(0, len(comm_tickers), 50):
-            batch = comm_tickers[i:i + 50]
-            symbols = ",".join(f"MCX_{t}" for t in batch)
-            comm_tasks.append(_groww_get("/live-data/ltp", {
-                "segment": "COMMODITY",
-                "exchange_symbols": symbols,
-            }))
-
-        if comm_tasks:
-            comm_results = await asyncio.gather(*comm_tasks, return_exceptions=True)
-            for data in comm_results:
-                if isinstance(data, dict):
-                    comm_ltp.update(data)
+        comm_ltp = await _fetch_batch_ltp("COMMODITY", [f"MCX_{t}" for t in comm_tickers])
 
         if comm_ltp:
             _sse_groww_commodity_cache = comm_ltp
@@ -2629,22 +3744,12 @@ async def _refresh_groww_ltp_cache():
         cash_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "CASH"]
         comm_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "COMMODITY"]
         idx_ltp: dict = {}
-
-        if cash_syms:
-            data = await _groww_get("/live-data/ltp", {
-                "segment": "CASH",
-                "exchange_symbols": ",".join(cash_syms),
-            })
-            if data and isinstance(data, dict):
-                idx_ltp.update(data)
-
-        if comm_syms:
-            data = await _groww_get("/live-data/ltp", {
-                "segment": "COMMODITY",
-                "exchange_symbols": ",".join(comm_syms),
-            })
-            if data and isinstance(data, dict):
-                idx_ltp.update(data)
+        cash_ltp, comm_ltp = await asyncio.gather(
+            _fetch_batch_ltp("CASH", cash_syms),
+            _fetch_batch_ltp("COMMODITY", comm_syms),
+        )
+        idx_ltp.update(cash_ltp)
+        idx_ltp.update(comm_ltp)
 
         if idx_ltp:
             _sse_groww_index_cache = idx_ltp
@@ -2662,7 +3767,7 @@ async def _refresh_groww_ltp_cache():
 
 @app.get("/api/stream/stock/{ticker}")
 async def stream_stock_price(ticker: str, exchange: str = Query("NSE"), segment: str = Query("CASH")):
-    """Dedicated SSE stream for a single stock ticker â€” direct Groww API call per tick."""
+    """Dedicated SSE stream for a single stock ticker using the preferred provider."""
     normalized_ticker = ticker.upper()
     ex = exchange.upper()
     seg = segment.upper()
@@ -2671,52 +3776,24 @@ async def stream_stock_price(ticker: str, exchange: str = Query("NSE"), segment:
     async def event_generator():
         prev_close = None
         prev_close_ts = 0.0
-        client = _get_http_client()
-        token = await _get_access_token()
 
         while True:
             try:
                 now = time.time()
                 is_open = _is_commodity_market_open() if seg == "COMMODITY" else _is_equity_market_open()
-                loop_sleep = 0.35 if is_open else 2.0
-                is_open = _is_commodity_market_open() if seg == "COMMODITY" else _is_equity_market_open()
-                loop_sleep = 0.8 if is_open else 4.0
-
-                # Refresh token if needed
-                if not token or (_token_cache.get("expiry") and datetime.now() >= _token_cache["expiry"]):
-                    token = await _get_access_token()
+                loop_sleep = 3.0 if is_open else 15.0
 
                 # Refresh prev_close periodically
                 if prev_close is None or (now - prev_close_ts) > 120:
-                    try:
-                        res = await client.get(
-                            "/live-data/ohlc",
-                            headers=_get_headers(token),
-                            params={"segment": seg, "exchange_symbols": symbol},
-                        )
-                        if res.status_code == 200:
-                            data = res.json()
-                            payload_d = data.get("payload", data) if data.get("status") == "SUCCESS" else data
-                            prev_close = _extract_prev_close(payload_d.get(symbol) if isinstance(payload_d, dict) else None, prev_close or 0)
-                    except Exception:
-                        pass
+                    ohlc_payload = await _fetch_batch_ohlc(seg, [symbol])
+                    prev_close = _extract_prev_close(
+                        ohlc_payload.get(symbol) if isinstance(ohlc_payload, dict) else None,
+                        prev_close or 0,
+                    )
                     prev_close_ts = now
 
-                # Direct LTP fetch â€” single HTTP call, no wrapper overhead
-                ltp = None
-                try:
-                    res = await client.get(
-                        "/live-data/ltp",
-                        headers=_get_headers(token),
-                        params={"segment": seg, "exchange_symbols": symbol},
-                    )
-                    if res.status_code == 200:
-                        data = res.json()
-                        payload_d = data.get("payload", data) if data.get("status") == "SUCCESS" else data
-                        if isinstance(payload_d, dict):
-                            ltp = payload_d.get(symbol)
-                except Exception:
-                    pass
+                ltp_payload = await _fetch_batch_ltp(seg, [symbol])
+                ltp = ltp_payload.get(symbol) if isinstance(ltp_payload, dict) else None
 
                 if isinstance(ltp, (int, float)) and ltp > 0:
                     close_val = prev_close if isinstance(prev_close, (int, float)) and prev_close > 0 else float(ltp)
@@ -2754,8 +3831,6 @@ async def stream_demand_prices(tickers: str = Query("", description="Comma-separ
         requested = list(MOCK_STOCKS.keys())[:12]  # fallback: top 12
 
     async def event_generator():
-        client = _get_http_client()
-        token = await _get_access_token()
         prev_closes: dict[str, float] = {}
         quote_changes: dict[str, dict[str, float]] = {}
         prev_close_ts = 0.0
@@ -2765,89 +3840,64 @@ async def stream_demand_prices(tickers: str = Query("", description="Comma-separ
             try:
                 now = time.time()
                 is_open = _is_equity_market_open()
-                loop_sleep = 0.7 if is_open else 4.0
-                if not token or (_token_cache.get("expiry") and datetime.now() >= _token_cache["expiry"]):
-                    token = await _get_access_token()
+                loop_sleep = 3.0 if is_open else 15.0
 
                 # Refresh prev_close every 60s
                 if not prev_closes or (now - prev_close_ts) > (120 if is_open else 600):
-                    syms = ",".join(f"NSE_{t}" for t in requested if t in MOCK_STOCKS)
-                    if syms:
-                        try:
-                            res = await client.get(
-                                "/live-data/ohlc",
-                                headers=_get_headers(token),
-                                params={"segment": "CASH", "exchange_symbols": syms},
-                            )
-                            if res.status_code == 200:
-                                data = res.json()
-                                payload_d = data.get("payload", data) if data.get("status") == "SUCCESS" else data
-                                if isinstance(payload_d, dict):
-                                    for t in requested:
-                                        key = f"NSE_{t}"
-                                        prev_close_val = _extract_prev_close(payload_d.get(key), 0)
-                                        if prev_close_val > 0:
-                                            prev_closes[t] = prev_close_val
-                                            _sse_prev_close_cache[key] = prev_close_val
-                        except Exception:
-                            pass
+                    ohlc_symbols = [f"NSE_{t}" for t in requested if t in MOCK_STOCKS]
+                    payload_d = await _fetch_batch_ohlc("CASH", ohlc_symbols)
+                    if isinstance(payload_d, dict):
+                        for t in requested:
+                            key = f"NSE_{t}"
+                            prev_close_val = _extract_prev_close(payload_d.get(key), 0)
+                            if prev_close_val > 0:
+                                prev_closes[t] = prev_close_val
+                                _sse_prev_close_cache[key] = prev_close_val
                     prev_close_ts = now
 
-                # For symbols still missing prev-close, fetch quote day-change directly (real Groww data)
+                # For symbols still missing prev-close, fetch direct day-change from the preferred provider.
                 if is_open and (now - quote_change_ts) > 20:
                     missing = [t for t in requested if t not in prev_closes]
                     if missing:
-                        try:
-                            for t in missing[:8]:
-                                res_q = await client.get(
+                        for t in missing[:4]:
+                            payload_q = None
+                            if _market_provider_order()[0] == "upstox":
+                                payload_q = await _upstox_full_quote(t, "CASH", "NSE")
+                            if not payload_q:
+                                payload_q = await _groww_get(
                                     "/live-data/quote",
-                                    headers=_get_headers(token),
-                                    params={"exchange": "NSE", "segment": "CASH", "trading_symbol": t},
+                                    {"exchange": "NSE", "segment": "CASH", "trading_symbol": t},
                                 )
-                                if res_q.status_code == 200:
-                                    qdata = res_q.json()
-                                    payload_q = qdata.get("payload", qdata) if qdata.get("status") == "SUCCESS" else qdata
-                                    if isinstance(payload_q, dict) and payload_q.get("last_price"):
-                                        quote_changes[t] = {
-                                            "change": float(payload_q.get("day_change", 0) or 0),
-                                            "changePercent": float(payload_q.get("day_change_perc", 0) or 0),
-                                        }
-                        except Exception:
-                            pass
+                            if not payload_q and _market_provider_order()[0] != "upstox":
+                                payload_q = await _upstox_full_quote(t, "CASH", "NSE")
+                            if isinstance(payload_q, dict) and (payload_q.get("last_price") or payload_q.get("ltp")):
+                                quote_changes[t] = {
+                                    "change": float(payload_q.get("day_change", payload_q.get("change", 0)) or 0),
+                                    "changePercent": float(payload_q.get("day_change_perc", payload_q.get("changePercent", 0)) or 0),
+                                }
                     quote_change_ts = now
 
                 # Batch LTP â€” single API call for all requested tickers (max 50)
-                symbols = ",".join(f"NSE_{t}" for t in requested[:50])
                 prices = {}
-                try:
-                    res = await client.get(
-                        "/live-data/ltp",
-                        headers=_get_headers(token),
-                        params={"segment": "CASH", "exchange_symbols": symbols},
-                    )
-                    if res.status_code == 200:
-                        data = res.json()
-                        payload_d = data.get("payload", data) if data.get("status") == "SUCCESS" else data
-                        if isinstance(payload_d, dict):
-                            for t in requested:
-                                key = f"NSE_{t}"
-                                ltp = payload_d.get(key)
-                                if isinstance(ltp, (int, float)) and ltp > 0:
-                                    pc = prev_closes.get(t) or _sse_prev_close_cache.get(key)
-                                    if pc and pc > 0:
-                                        ch = round(ltp - pc, 2)
-                                        ch_pct = round((ch / pc) * 100, 2) if pc else 0
-                                        prices[t] = {"ltp": ltp, "change": ch, "changePercent": ch_pct}
-                                    elif t in quote_changes:
-                                        prices[t] = {
-                                            "ltp": ltp,
-                                            "change": round(float(quote_changes[t].get("change", 0)), 2),
-                                            "changePercent": round(float(quote_changes[t].get("changePercent", 0)), 2),
-                                        }
-                                    else:
-                                        prices[t] = {"ltp": ltp, "change": 0.0, "changePercent": 0.0}
-                except Exception:
-                    pass
+                payload_d = await _fetch_batch_ltp("CASH", [f"NSE_{t}" for t in requested[:50]])
+                if isinstance(payload_d, dict):
+                    for t in requested:
+                        key = f"NSE_{t}"
+                        ltp = payload_d.get(key)
+                        if isinstance(ltp, (int, float)) and ltp > 0:
+                            pc = prev_closes.get(t) or _sse_prev_close_cache.get(key)
+                            if pc and pc > 0:
+                                ch = round(ltp - pc, 2)
+                                ch_pct = round((ch / pc) * 100, 2) if pc else 0
+                                prices[t] = {"ltp": ltp, "change": ch, "changePercent": ch_pct}
+                            elif t in quote_changes:
+                                prices[t] = {
+                                    "ltp": ltp,
+                                    "change": round(float(quote_changes[t].get("change", 0)), 2),
+                                    "changePercent": round(float(quote_changes[t].get("changePercent", 0)), 2),
+                                }
+                            else:
+                                prices[t] = {"ltp": ltp, "change": 0.0, "changePercent": 0.0}
 
                 if prices:
                     yield f"data: {json.dumps(prices)}\n\n"
@@ -2873,9 +3923,9 @@ async def stream_demand_prices(tickers: str = Query("", description="Comma-separ
 @app.get("/api/stream/prices")
 async def stream_prices():
     """
-    Server-Sent Events stream that pushes ALL stock prices every 300ms.
+    Server-Sent Events stream that pushes ALL stock prices.
     Single connection replaces N individual polling requests.
-    Uses Groww live data only.
+    Uses the configured market-data provider order.
     """
     async def event_generator():
         global _sse_groww_ts
@@ -2887,8 +3937,7 @@ async def stream_prices():
                 equity_open = _is_equity_market_open()
                 commodity_open = _is_commodity_market_open()
 
-                refresh_interval = 3.0 if (equity_open or commodity_open) else 20.0
-                refresh_interval = 1.2 if (equity_open or commodity_open) else refresh_interval
+                refresh_interval = 5.0 if (equity_open or commodity_open) else 30.0
                 if time.time() - _sse_groww_ts > refresh_interval:
                     if groww_task is None or groww_task.done():
                         groww_task = asyncio.create_task(_refresh_groww_ltp_cache())
@@ -2914,7 +3963,7 @@ async def stream_prices():
                         }
                     # Skip stocks without live data â€” no mock fallback
 
-                # â”€â”€ Commodity prices (live from Groww only) â”€â”€
+                # â”€â”€ Commodity prices â”€â”€
                 commodities = {}
                 for comm in MOCK_COMMODITIES:
                     t = comm["ticker"]
@@ -2922,7 +3971,7 @@ async def stream_prices():
                     live_ltp = _sse_groww_commodity_cache.get(ltp_key)
 
                     if live_ltp is not None and live_ltp > 0:
-                        # Live data from Groww
+                        # Live data
                         ohlc_raw = _sse_groww_ohlc_cache.get(ltp_key)
                         prev_close = _sse_prev_close_cache.get(ltp_key, float(live_ltp))
                         if ohlc_raw:
@@ -2947,7 +3996,7 @@ async def stream_prices():
                         }
                     # Skip commodities without live data â€” no mock fallback
 
-                # â”€â”€ Market indices (live from Groww only) â”€â”€
+                # â”€â”€ Market indices â”€â”€
                 indices = []
                 for name, info in MOCK_INDEX_DATA.items():
                     idx_info = INDEX_GROWW_SYMBOLS.get(name)

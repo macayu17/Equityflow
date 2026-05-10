@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useStockPrice, useMarketDepth, useStockDetails } from "@/hooks/useStockData";
-import { useStreamPrice, useFastStockStream } from "@/hooks/usePriceStream";
+import { useStreamPrice } from "@/hooks/usePriceStream";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { StockChart } from "@/components/market/stock-chart";
 import { MarketDepthTable } from "@/components/market/market-depth";
@@ -29,7 +29,6 @@ import type { OrderType } from "@/lib/types";
 export default function StockDetailPage() {
   const params = useParams();
   const ticker = (params.ticker as string)?.toUpperCase() || "";
-  const fastStreamPrice = useFastStockStream(ticker);
   const streamPrice = useStreamPrice(ticker);
   const { data: ohlcQuote } = useStockPrice(ticker); // For OHLC data (open/high/low/close/volume)
   const { data: depth } = useMarketDepth(ticker);
@@ -47,9 +46,9 @@ export default function StockDetailPage() {
   const isEquityMarketOpen = getMarketStatus("equity").isOpen;
 
   // Use SSE stream for fast LTP, fall back to HTTP poll
-  const ltp = fastStreamPrice?.ltp ?? streamPrice?.ltp ?? ohlcQuote?.ltp ?? 0;
-  const change = fastStreamPrice?.change ?? streamPrice?.change ?? ohlcQuote?.change ?? 0;
-  const changePercent = fastStreamPrice?.changePercent ?? streamPrice?.changePercent ?? ohlcQuote?.changePercent ?? 0;
+  const ltp = streamPrice?.ltp ?? ohlcQuote?.ltp ?? 0;
+  const change = streamPrice?.change ?? ohlcQuote?.change ?? 0;
+  const changePercent = streamPrice?.changePercent ?? ohlcQuote?.changePercent ?? 0;
   // Build a compatible quote object with all fields the template needs
   const quote = ltp > 0 ? {
     ltp,

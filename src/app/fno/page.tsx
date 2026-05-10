@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useFnoQuote, useOptionChain } from "@/hooks/useStockData";
 import { cn, formatCurrency } from "@/lib/utils";
-import { FNO_UNDERLYINGS, FNO_EXPIRY_DATES } from "@/lib/constants";
+import { FNO_UNDERLYINGS, FNO_EXPIRY_DATES, generateMockFutures, generateMockOptionChain } from "@/lib/constants";
 import { CandlestickChart, ArrowUpRight, ArrowDownRight, ChevronDown } from "lucide-react";
 import { MarketStatusBadge } from "@/components/market/market-status";
 import { StockChart } from "@/components/market/stock-chart";
@@ -70,59 +70,91 @@ function FnoPageContent() {
 
   const optionChainRows = useMemo(() => {
     const strikes = optionChain?.strikes;
-    if (Array.isArray(strikes) && strikes.length > 0) {
-      return strikes
+    const rows = Array.isArray(strikes) && strikes.length > 0
+      ? strikes
+      : generateMockOptionChain(underlying.ticker, spotPrice, underlying.lotSize);
+
+    if (Array.isArray(rows) && rows.length > 0) {
+      return rows
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((row: any) => row?.CE && row?.PE)
+        .filter((row: any) => (row?.CE || row?.ce) && (row?.PE || row?.pe))
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((row: any) => ({
-          strikePrice: Number(row.strikePrice),
-          ce: {
-            ticker: row.CE.tradingSymbol || `${underlying.ticker}${Math.round(Number(row.strikePrice))}CE`,
+        .map((row: any) => {
+          const ce = row.CE || row.ce;
+          const pe = row.PE || row.pe;
+          const strikePrice = Number(row.strikePrice);
+          const expiryCode = expiry.replaceAll("-", "").slice(2);
+          const localCeTicker = `${underlying.ticker}${expiryCode}${Math.round(strikePrice)}CE`;
+          const localPeTicker = `${underlying.ticker}${expiryCode}${Math.round(strikePrice)}PE`;
+          const ceTicker = ce.tradingSymbol || (row.CE ? ce.ticker : localCeTicker) || localCeTicker;
+          const peTicker = pe.tradingSymbol || (row.PE ? pe.ticker : localPeTicker) || localPeTicker;
+
+          return {
+            strikePrice,
+            ce: {
+            ticker: ceTicker,
             underlying: underlying.ticker,
-            strikePrice: Number(row.strikePrice),
+            strikePrice,
             optionType: "CE" as const,
             expiry,
             expiryDate: new Date(expiry),
-            lotSize: Number(row.CE.lotSize || underlying.lotSize),
-            ltp: Number(row.CE.ltp || 0),
-            change: Number(row.CE.change || 0),
-            changePercent: Number(row.CE.changePct || 0),
-            openInterest: Number(row.CE.openInterest || 0),
-            oiChange: Number(row.CE.changeinOpenInterest || 0),
-            volume: Number(row.CE.volume || 0),
-            iv: Number(row.CE.greeks?.iv || 0),
-            delta: Number(row.CE.greeks?.delta || 0),
-            gamma: Number(row.CE.greeks?.gamma || 0),
-            theta: Number(row.CE.greeks?.theta || 0),
-            vega: Number(row.CE.greeks?.vega || 0),
+            lotSize: Number(ce.lotSize || underlying.lotSize),
+            ltp: Number(ce.ltp || 0),
+            change: Number(ce.change || 0),
+            changePercent: Number(ce.changePct ?? ce.changePercent ?? 0),
+            openInterest: Number(ce.openInterest || 0),
+            oiChange: Number(ce.changeinOpenInterest ?? ce.oiChange ?? 0),
+            volume: Number(ce.volume || 0),
+            iv: Number(ce.greeks?.iv ?? ce.iv ?? 0),
+            delta: Number(ce.greeks?.delta ?? ce.delta ?? 0),
+            gamma: Number(ce.greeks?.gamma ?? ce.gamma ?? 0),
+            theta: Number(ce.greeks?.theta ?? ce.theta ?? 0),
+            vega: Number(ce.greeks?.vega ?? ce.vega ?? 0),
           },
           pe: {
-            ticker: row.PE.tradingSymbol || `${underlying.ticker}${Math.round(Number(row.strikePrice))}PE`,
+            ticker: peTicker,
             underlying: underlying.ticker,
-            strikePrice: Number(row.strikePrice),
+            strikePrice,
             optionType: "PE" as const,
             expiry,
             expiryDate: new Date(expiry),
-            lotSize: Number(row.PE.lotSize || underlying.lotSize),
-            ltp: Number(row.PE.ltp || 0),
-            change: Number(row.PE.change || 0),
-            changePercent: Number(row.PE.changePct || 0),
-            openInterest: Number(row.PE.openInterest || 0),
-            oiChange: Number(row.PE.changeinOpenInterest || 0),
-            volume: Number(row.PE.volume || 0),
-            iv: Number(row.PE.greeks?.iv || 0),
-            delta: Number(row.PE.greeks?.delta || 0),
-            gamma: Number(row.PE.greeks?.gamma || 0),
-            theta: Number(row.PE.greeks?.theta || 0),
-            vega: Number(row.PE.greeks?.vega || 0),
+            lotSize: Number(pe.lotSize || underlying.lotSize),
+            ltp: Number(pe.ltp || 0),
+            change: Number(pe.change || 0),
+            changePercent: Number(pe.changePct ?? pe.changePercent ?? 0),
+            openInterest: Number(pe.openInterest || 0),
+            oiChange: Number(pe.changeinOpenInterest ?? pe.oiChange ?? 0),
+            volume: Number(pe.volume || 0),
+            iv: Number(pe.greeks?.iv ?? pe.iv ?? 0),
+            delta: Number(pe.greeks?.delta ?? pe.delta ?? 0),
+            gamma: Number(pe.greeks?.gamma ?? pe.gamma ?? 0),
+            theta: Number(pe.greeks?.theta ?? pe.theta ?? 0),
+            vega: Number(pe.greeks?.vega ?? pe.vega ?? 0),
           },
-        }));
+          };
+        });
     }
 
     return [];
-  }, [optionChain, underlying.ticker, underlying.lotSize, expiry]);
-  const futures = useMemo<FutureRow[]>(() => [], []);
+  }, [optionChain, underlying.ticker, underlying.lotSize, spotPrice, expiry]);
+
+  const futures = useMemo<FutureRow[]>(() => {
+    return generateMockFutures(underlying.ticker, underlying.name, spotPrice, underlying.lotSize).map((fut, index) => {
+      const multiplier = 1 + index * 0.03;
+      const change = quote ? Number((spotChange * multiplier).toFixed(2)) : fut.change;
+      const prev = Math.max(1, fut.ltp - change);
+      return {
+        ticker: fut.ticker,
+        expiry: fut.expiry,
+        ltp: Number(fut.ltp.toFixed(2)),
+        change,
+        changePercent: quote ? Number(((change / prev) * 100).toFixed(2)) : fut.changePercent,
+        openInterest: fut.openInterest,
+        volume: fut.volume,
+        lotSize: fut.lotSize,
+      };
+    });
+  }, [underlying.ticker, underlying.name, underlying.lotSize, spotPrice, spotChange, quote]);
 
   const openFnoOrder = (ticker: string, name: string, ltp: number, type: OrderType, lots: number = underlying.lotSize) => {
     setOrderTicker(ticker);
@@ -174,7 +206,7 @@ function FnoPageContent() {
             <ChevronDown size={14} className="text-muted dark:text-muted-dark ml-2" />
           </button>
           {showUnderlyingSelect && (
-            <div className="absolute top-full left-0 mt-1 z-20 w-56 rounded-xl border border-border dark:border-border-dark bg-card dark:bg-card-dark shadow-elevated py-1.5 animate-scale-in">
+            <div className="terminal-select-menu absolute left-0 top-full z-20 mt-1 w-56 rounded-sm py-1.5 animate-scale-in">
               {FNO_UNDERLYINGS.map((u) => (
                 <button
                   key={u.ticker}
@@ -183,8 +215,8 @@ function FnoPageContent() {
                     setShowUnderlyingSelect(false);
                   }}
                   className={cn(
-                    "w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface dark:hover:bg-elevated-dark transition-colors",
-                    underlying.ticker === u.ticker && "bg-accent/5"
+                    "w-full flex items-center gap-2 px-3 py-2 text-left text-[var(--terminal-fg)] transition-colors hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]",
+                    underlying.ticker === u.ticker && "bg-[var(--terminal-hover)] text-[var(--terminal-accent)]"
                   )}
                 >
                   <span className="w-6 h-6 rounded bg-accent/10 flex items-center justify-center text-accent text-2xs font-bold">

@@ -4,14 +4,14 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
 import { MOCK_COMMODITIES, FNO_UNDERLYINGS } from "@/lib/constants";
-import { Briefcase, ArrowUpRight, ArrowDownRight } from "lucide-react";
+import { Briefcase, ArrowUpRight, ArrowDownRight, CandlestickChart, Search, WalletCards } from "lucide-react";
 import Link from "next/link";
 import { OrderPad } from "@/components/trading/order-pad";
 import { StockLogo } from "@/components/market/stock-logo";
 import { useToast } from "@/components/toast-provider";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
-import { API_CONFIG } from "@/lib/constants";
 import type { OrderType, Position } from "@/lib/types";
+import { apiGetJson } from "@/services/request-cache";
 
 const COMMON_FNO_LOT_SIZES = [5500, 1600, 1100, 900, 750, 700, 550, 400, 350, 250, 175, 125, 100, 75, 65, 50, 30, 25, 20, 15];
 function isFnoPosition(position: Position): boolean {
@@ -52,42 +52,66 @@ function inferFnoLotSize(position: Position): number {
 
 export function PortfolioSummaryCard() {
   const { summary, balance } = usePortfolio();
+  const netWorth = balance + summary.currentValue;
+  const deployedPercent = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
+  const cashPercent = Math.max(0, 100 - deployedPercent);
 
   const cards = [
-    { label: "Invested", value: summary.totalInvested, color: "text-primary dark:text-primary-dark" },
-    { label: "Current Value", value: summary.currentValue, color: "text-primary dark:text-primary-dark" },
+    { label: "Invested", value: summary.totalInvested, color: "terminal-fg" },
+    { label: "Current Value", value: summary.currentValue, color: "terminal-fg" },
     { label: "Total Returns", value: summary.totalPnl, pct: summary.totalPnlPercent, dynamic: true },
     { label: "Day Returns", value: summary.dayPnl, pct: summary.dayPnlPercent, dynamic: true },
   ];
 
   return (
-    <div className="space-y-4">
-      {/* Virtual Balance Banner */}
-      <div className="relative rounded-2xl overflow-hidden">
-        <div className="absolute inset-0 bg-accent" />
-        <div className="relative p-5 text-white">
-          <div className="text-sm font-medium opacity-80 mb-1">Virtual Wallet Balance</div>
-          <div className="text-3xl font-bold tabular-nums tracking-tight">{formatCurrency(balance)}</div>
-          <div className="text-xs font-medium opacity-60 mt-1.5">Paper Trading Account</div>
+    <div className="grid gap-3 xl:grid-cols-[1.2fr_2fr]">
+      <div className="portfolio-balance-panel p-4">
+        <div className="relative z-10 flex h-full flex-col justify-between gap-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="terminal-subtle mb-1 text-[10px] font-bold uppercase tracking-[0.14em]">Available Cash</div>
+              <div className="terminal-number text-3xl font-black tracking-tight text-[var(--terminal-accent)]">
+                {formatCurrency(balance)}
+              </div>
+            </div>
+            <div className="flex h-10 w-10 items-center justify-center rounded-sm border border-[color:var(--terminal-border)] bg-[var(--terminal-fill)] text-[var(--terminal-accent)]">
+              <WalletCards size={19} strokeWidth={1.9} />
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.1em]">
+              <span className="terminal-subtle">Cash {cashPercent.toFixed(2)}%</span>
+              <span className="terminal-subtle">Deployed {deployedPercent.toFixed(2)}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-sm border border-[color:var(--terminal-grid)] bg-[var(--terminal-fill)]">
+              <div
+                className="h-full bg-[var(--terminal-accent)] transition-[width] duration-300"
+                style={{ width: `${Math.min(100, deployedPercent)}%` }}
+              />
+            </div>
+            <div className="terminal-subtle mt-2 font-mono text-[10px] uppercase tracking-[0.1em]">
+              Net liquidation {formatCurrency(netWorth)}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Summary Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {cards.map((card) => (
           <div
             key={card.label}
-            className="premium-card p-3.5"
+            className="terminal-panel p-3.5"
           >
-            <div className="text-[11px] text-muted dark:text-muted-dark mb-1.5 font-medium uppercase tracking-wider">
+            <div className="terminal-subtle mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em]">
               {card.label}
             </div>
-            <div className={cn("text-base font-bold tabular-nums", card.dynamic ? getPriceChangeColor(card.value) : card.color)}>
+            <div className={cn("terminal-number text-base font-bold", card.dynamic ? getPriceChangeColor(card.value) : card.color)}>
               {card.dynamic && card.value > 0 && "+"}
               {formatCurrency(card.value)}
             </div>
             {card.dynamic && card.pct !== undefined && (
-              <div className={cn("text-xs font-medium mt-1 flex items-center gap-0.5", getPriceChangeColor(card.value))}>
+              <div className={cn("mt-1 flex items-center gap-0.5 text-xs font-medium", getPriceChangeColor(card.value))}>
                 {card.value >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
                 {formatPercentage(card.pct)}
               </div>
@@ -154,39 +178,27 @@ export function HoldingsList() {
         try {
           // Try resolving via the FNO resolve endpoint first (handles simplified tickers like NIFTY25300CE)
           const simplified = pos.ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-          const resolveRes = await fetch(
-            `${API_CONFIG.baseUrl}/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`,
-            { cache: "no-store" }
+          const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
+            `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
           );
-          if (resolveRes.ok) {
-            const resolveData = await resolveRes.json();
-            if (resolveData?.resolved && resolveData.tradingSymbol) {
-              const quoteRes = await fetch(
-                `${API_CONFIG.baseUrl}/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`,
-                { cache: "no-store" }
-              );
-              if (quoteRes.ok) {
-                const q = await quoteRes.json();
-                const ltp = Number(q.ltp);
-                if (active && ltp > 0) {
-                  flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-                }
-                continue;
-              }
+          if (resolveData?.resolved && resolveData.tradingSymbol) {
+            const q = await apiGetJson<{ ltp?: number }>(
+              `/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`
+            );
+            const ltp = Number(q?.ltp);
+            if (active && ltp > 0) {
+              flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
+              continue;
             }
           }
 
           // Fallback: direct FNO quote endpoint
-          const res = await fetch(
-            `${API_CONFIG.baseUrl}/api/fno/quote/${encodeURIComponent(pos.ticker)}`,
-            { cache: "no-store" }
+          const q = await apiGetJson<{ ltp?: number }>(
+            `/api/fno/quote/${encodeURIComponent(pos.ticker)}`
           );
-          if (res.ok) {
-            const q = await res.json();
-            const ltp = Number(q.ltp);
-            if (active && ltp > 0) {
-              flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-            }
+          const ltp = Number(q?.ltp);
+          if (active && ltp > 0) {
+            flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
           }
         } catch {
           // Ignore individual fetch errors — will retry next cycle
@@ -195,7 +207,7 @@ export function HoldingsList() {
     };
 
     fetchFnoPrices();
-    const interval = setInterval(fetchFnoPrices, 5000);
+    const interval = setInterval(fetchFnoPrices, 15_000);
 
     return () => {
       active = false;
@@ -229,20 +241,30 @@ export function HoldingsList() {
 
   if (positions.length === 0) {
     return (
-      <div className="rounded-xl border border-border dark:border-border-dark bg-card dark:bg-card-dark p-8 text-center">
-        <Briefcase size={40} className="mx-auto text-muted/30 dark:text-muted-dark/30 mb-3" />
-        <h3 className="text-sm font-medium text-primary dark:text-primary-dark mb-1">
+      <div className="terminal-panel p-8 text-center">
+        <Briefcase size={38} className="mx-auto mb-3 text-[var(--terminal-subtle)] opacity-45" />
+        <h3 className="mb-1 text-sm font-semibold text-[var(--terminal-fg)]">
           No Holdings Yet
         </h3>
-        <p className="text-xs text-muted dark:text-muted-dark mb-4">
+        <p className="terminal-subtle mb-4 text-xs">
           Start paper trading to build your portfolio
         </p>
-        <Link
-          href="/"
-          className="inline-flex items-center gap-1 px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent/90 transition-colors"
-        >
-          Explore Stocks
-        </Link>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Link
+            href="/stocks"
+            className="terminal-action gap-1.5"
+          >
+            <Search size={12} />
+            Explore Stocks
+          </Link>
+          <Link
+            href="/fno"
+            className="terminal-action gap-1.5"
+          >
+            <CandlestickChart size={12} />
+            Open F&O
+          </Link>
+        </div>
       </div>
     );
   }

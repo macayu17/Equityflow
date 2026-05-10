@@ -34,8 +34,8 @@ export const API_CONFIG = {
   // Groww API base URL (proxied through our FastAPI backend)
   baseUrl: normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL),
   // Polling intervals
-  pricePollingMs: 500,
-  indexPollingMs: 500,
+  pricePollingMs: Number(process.env.NEXT_PUBLIC_PRICE_POLL_MS || 10_000),
+  indexPollingMs: Number(process.env.NEXT_PUBLIC_INDEX_POLL_MS || 30_000),
   // Virtual trading defaults
   defaultBalance: 100000,
   // Buffer for order validation (0.5%)
@@ -381,19 +381,22 @@ export function generateMockOptionChain(underlyingTicker: string, underlyingLtp:
 }
 
 export function generateMockFutures(underlying: string, name: string, ltp: number, lotSize: number) {
-  return FNO_EXPIRY_DATES.map((expiry, i) => ({
-    ticker: `${underlying}FUT`,
-    underlying,
-    underlyingName: name,
-    expiry,
-    expiryDate: new Date(expiry),
-    lotSize,
-    ltp: parseFloat((ltp + (i + 1) * ltp * 0.002).toFixed(2)),
-    change: 0,
-    changePercent: 0,
-    openInterest: 150000 + i * 35000,
-    volume: 50000 + i * 12000,
-    high: parseFloat((ltp * (1.008 + i * 0.0005)).toFixed(2)),
-    low: parseFloat((ltp * (0.992 + i * 0.0004)).toFixed(2)),
-  }));
+  return FNO_EXPIRY_DATES.map((expiry, i) => {
+    const expiryCode = expiry.replaceAll("-", "").slice(2);
+    return {
+      ticker: `${underlying}${expiryCode}FUT`,
+      underlying,
+      underlyingName: name,
+      expiry,
+      expiryDate: new Date(expiry),
+      lotSize,
+      ltp: parseFloat((ltp + (i + 1) * ltp * 0.002).toFixed(2)),
+      change: 0,
+      changePercent: 0,
+      openInterest: 150000 + i * 35000,
+      volume: 50000 + i * 12000,
+      high: parseFloat((ltp * (1.008 + i * 0.0005)).toFixed(2)),
+      low: parseFloat((ltp * (0.992 + i * 0.0004)).toFixed(2)),
+    };
+  });
 }

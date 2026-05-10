@@ -13,8 +13,8 @@ export function useStockPrice(ticker: string | null) {
     queryKey: ["stock-price", ticker],
     queryFn: () => getStockQuote(ticker!),
     enabled: !!ticker,
-    refetchInterval: 5000, // OHLC data; fast LTP comes from SSE stream
-    staleTime: 3000,
+    refetchInterval: false, // OHLC details load once; live LTP comes from SSE stream
+    staleTime: 30_000,
   });
 }
 
@@ -24,18 +24,19 @@ export function useFnoQuote(ticker: string | null) {
     queryKey: ["fno-price", ticker],
     queryFn: () => getFnoQuote(ticker!),
     enabled: !!ticker,
-    refetchInterval: isFnoMarketOpen ? API_CONFIG.pricePollingMs : false,
-    staleTime: 1000,
+    refetchInterval: isFnoMarketOpen ? Math.max(API_CONFIG.pricePollingMs, 10_000) : false,
+    staleTime: 5_000,
   });
 }
 
 export function useCommodityQuote(ticker: string | null) {
+  const isCommodityMarketOpen = getMarketStatus("commodity").isOpen;
   return useQuery({
     queryKey: ["commodity-price", ticker],
     queryFn: () => getCommodityQuote(ticker!),
     enabled: !!ticker,
-    refetchInterval: API_CONFIG.pricePollingMs,
-    staleTime: 1000,
+    refetchInterval: isCommodityMarketOpen ? Math.max(API_CONFIG.pricePollingMs, 15_000) : false,
+    staleTime: 5_000,
   });
 }
 
@@ -71,8 +72,8 @@ export function useMarketDepth(ticker: string) {
     queryKey: ["market-depth", ticker],
     queryFn: () => getMarketDepth(ticker),
     enabled: !!ticker && isEquityMarketOpen,
-    refetchInterval: isEquityMarketOpen ? 800 : false,
-    staleTime: 400,
+    refetchInterval: isEquityMarketOpen ? 5_000 : false,
+    staleTime: 2_500,
   });
 }
 
@@ -80,8 +81,8 @@ export function useTrendingStocks() {
   return useQuery({
     queryKey: ["trending"],
     queryFn: getTrendingStocks,
-    refetchInterval: API_CONFIG.pricePollingMs,
-    staleTime: 2000,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
   });
 }
 
@@ -104,8 +105,8 @@ export function useFullQuote(
     queryKey: ["full-quote", exchange, segment, tradingSymbol],
     queryFn: () => getFullQuote(tradingSymbol!, exchange, segment),
     enabled: !!tradingSymbol,
-    refetchInterval: API_CONFIG.pricePollingMs,
-    staleTime: 1000,
+    refetchInterval: Math.max(API_CONFIG.pricePollingMs, 10_000),
+    staleTime: 5_000,
   });
 }
 
@@ -120,8 +121,8 @@ export function useOptionChain(
     queryKey: ["option-chain", exchange, underlying, expiryDate],
     queryFn: () => getOptionChain(underlying!, expiryDate!, exchange),
     enabled: !!underlying && !!expiryDate,
-    refetchInterval: isFnoMarketOpen ? 2000 : false,
-    staleTime: 1000,
+    refetchInterval: isFnoMarketOpen ? 15_000 : false,
+    staleTime: 10_000,
   });
 }
 
@@ -130,8 +131,8 @@ export function useOrderList(segment: string = "CASH") {
   return useQuery({
     queryKey: ["orders", segment],
     queryFn: () => getOrderList(segment),
-    refetchInterval: 500,
-    staleTime: 500,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
   });
 }
 
@@ -140,8 +141,8 @@ export function useHoldings() {
   return useQuery({
     queryKey: ["holdings"],
     queryFn: getHoldings,
-    refetchInterval: 1000,
-    staleTime: 500,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
   });
 }
 
@@ -149,8 +150,8 @@ export function usePositions(segment?: string) {
   return useQuery({
     queryKey: ["positions", segment],
     queryFn: () => getPositions(segment),
-    refetchInterval: 500,
-    staleTime: 500,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
   });
 }
 
@@ -159,8 +160,8 @@ export function useApiStatus() {
   return useQuery({
     queryKey: ["api-status"],
     queryFn: getApiStatus,
-    refetchInterval: 5000,
-    staleTime: 2000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
 }
 
@@ -171,6 +172,7 @@ export function useStockDetails(ticker: string | null) {
     queryFn: () => getStockDetails(ticker!),
     enabled: !!ticker,
     refetchInterval: false,
-    staleTime: 0,
+    staleTime: 5 * 60_000,
+    gcTime: 15 * 60_000,
   });
 }

@@ -11,8 +11,6 @@ import {
   BarChart3,
   Eye,
   Activity,
-  Moon,
-  Sun,
   Wallet,
   ChevronLeft,
   ChevronRight,
@@ -22,9 +20,9 @@ import {
   X,
 } from "lucide-react";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
-import { useTheme } from "@/hooks/usePortfolio";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { useState, useRef, useEffect } from "react";
+import { ThemeToggleButton } from "@/components/layout/theme-toggle-button";
 
 const NAV_SECTIONS = [
   {
@@ -49,7 +47,6 @@ const NAV_SECTIONS = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { dark, toggle } = useTheme();
   const { balance, setBalance, summary, positions, orders } = usePortfolio();
   const [collapsed, setCollapsed] = useState(false);
   const [editingBalance, setEditingBalance] = useState(false);
@@ -265,16 +262,7 @@ export function Sidebar() {
             </div>
           </div>
         )}
-        <button
-          onClick={toggle}
-          className={cn(
-            "terminal-subtle flex w-full items-center rounded-sm border border-transparent text-[12px] font-semibold uppercase tracking-[0.04em] transition-colors hover:border-[color:var(--terminal-border)] hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]",
-            collapsed ? "justify-center p-2.5" : "gap-2.5 px-2.5 py-2.5"
-          )}
-        >
-          {dark ? <Sun size={19} strokeWidth={1.7} /> : <Moon size={19} strokeWidth={1.7} />}
-          {!collapsed && <span>{dark ? "Light" : "Dark"}</span>}
-        </button>
+        <ThemeToggleButton collapsed={collapsed} />
         <button
           onClick={() => setCollapsed(!collapsed)}
           className={cn(

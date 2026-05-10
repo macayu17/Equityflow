@@ -370,4 +370,128 @@ input[type="number"] {
   .terminal-overlay {
     background: color-mix(in srgb, var(--terminal-surface) 85%, transparent);
   }
+
+  .theme-wave-overlay {
+    pointer-events: none;
+    position: fixed;
+    left: var(--wave-x);
+    top: var(--wave-y);
+    z-index: 9999;
+    width: 18px;
+    height: 18px;
+    border-radius: 9999px;
+    background:
+      radial-gradient(circle, color-mix(in srgb, var(--terminal-accent) 38%, transparent) 0 28%, rgba(56, 189, 248, 0.14) 52%, transparent 72%);
+    transform: translate(-50%, -50%) scale(0);
+    animation: theme-wave 720ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    mix-blend-mode: screen;
+  }
+
+  .terminal-select-trigger {
+    display: inline-flex;
+    height: 1.85rem;
+    min-width: 8.75rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-radius: 3px;
+    border: 1px solid var(--terminal-border);
+    background: var(--terminal-fill);
+    padding: 0 0.55rem;
+    color: var(--terminal-fg);
+    font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+
+  .terminal-select-trigger:hover,
+  .terminal-select-trigger[aria-expanded="true"] {
+    border-color: var(--terminal-accent);
+    background: var(--terminal-hover);
+    color: var(--terminal-accent);
+  }
+
+  .terminal-select-menu {
+    border: 1px solid color-mix(in srgb, var(--terminal-accent) 42%, var(--terminal-border));
+    background: color-mix(in srgb, var(--terminal-surface) 96%, black 4%);
+    color: var(--terminal-fg);
+    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .terminal-select-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.45rem 0.55rem;
+    font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    color: var(--terminal-muted);
+    transition: color 0.12s ease, background 0.12s ease;
+  }
+
+  .terminal-select-item:hover,
+  .terminal-select-item[data-active="true"] {
+    background: var(--terminal-hover);
+    color: var(--terminal-accent);
+  }
+
+  .portfolio-balance-panel {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--terminal-border);
+    border-radius: 4px;
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--terminal-surface-raised) 82%, var(--terminal-accent) 18%), var(--terminal-surface) 72%);
+  }
+
+  .portfolio-balance-panel::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, transparent 0 68%, color-mix(in srgb, var(--terminal-accent) 11%, transparent) 68% 69%, transparent 69% 100%),
+      linear-gradient(0deg, transparent 0 70%, color-mix(in srgb, var(--terminal-grid) 80%, transparent) 70% 71%, transparent 71% 100%);
+    background-size: 46px 28px;
+    opacity: 0.42;
+  }
+
+  .portfolio-action-tile {
+    border: 1px solid var(--terminal-border);
+    border-radius: 4px;
+    background: var(--terminal-surface);
+    color: var(--terminal-fg);
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+  }
+
+  .portfolio-action-tile:hover {
+    border-color: var(--terminal-accent);
+    background: var(--terminal-hover);
+    transform: translateY(-1px);
+  }
+}
+
+@keyframes theme-wave {
+  0% {
+    opacity: 0.95;
+    transform: translate(-50%, -50%) scale(0);
+  }
+
+  70% {
+    opacity: 0.42;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(150);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-wave-overlay {
+    animation-duration: 1ms;
+  }
 }

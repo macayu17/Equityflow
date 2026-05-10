@@ -6,6 +6,7 @@ import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { LayoutModeSwitcher } from "@/components/layout/layout-mode-switcher";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { ThemeToggleButton } from "@/components/layout/theme-toggle-button";
 
 export function TopBar() {
   const [searchOpen, setSearchOpen] = useState(false);
@@ -39,21 +40,24 @@ export function TopBar() {
         <button
           onClick={() => setSearchOpen(true)}
           className={cn(
-            "flex items-center gap-3 px-4 py-2.5 rounded-xl border transition-all duration-200",
+            "flex h-9 items-center gap-2.5 rounded-lg border px-3 py-1.5 transition-all duration-200",
             "terminal-input terminal-subtle",
             "hover:border-[color:var(--terminal-accent)] hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-fg)]",
-            "text-[12px] w-full max-w-md mx-auto md:mx-0"
+            "w-full max-w-[390px] text-[11px] md:mx-0"
           )}
         >
-          <Search size={15} strokeWidth={1.8} />
+          <Search size={14} strokeWidth={1.8} />
           <span className="flex-1 text-left">Search stocks, F&O, commodities...</span>
-          <kbd className="terminal-badge hidden md:inline-flex items-center gap-0.5 text-[10px] font-mono rounded px-1.5 py-0.5">
-            <Command size={11} />
+          <kbd className="terminal-badge hidden h-5 items-center gap-0.5 rounded-sm px-1.5 font-mono text-[9px] md:inline-flex">
+            <Command size={10} />
             K
           </kbd>
         </button>
 
-        <LayoutModeSwitcher />
+        <div className="flex items-center gap-2">
+          <ThemeToggleButton variant="topbar" />
+          <LayoutModeSwitcher />
+        </div>
       </header>
 
       <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />

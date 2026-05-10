@@ -84,6 +84,25 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+Create `backend/.env` from `backend/.env.example`. Market data now prefers Upstox and falls back to Groww:
+
+```env
+MARKET_DATA_PROVIDER=upstox
+UPSTOX_ACCESS_TOKEN=your_upstox_access_token
+
+# Optional Groww fallback
+GROWW_API_KEY=
+GROWW_API_SECRET=
+GROWW_ACCESS_TOKEN=
+```
+
+Useful live checks:
+
+```bash
+curl http://127.0.0.1:8001/api/status
+curl "http://127.0.0.1:8001/api/quote?exchange=NSE&segment=CASH&trading_symbol=RELIANCE"
+```
+
 ### 4. Run the Application
 
 You can use the provided powershell script to boot both simultaneously on Windows:
