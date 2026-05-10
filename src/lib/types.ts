@@ -112,6 +112,7 @@ export interface Order {
   charges?: number;
   gross_total?: number;
   net_total?: number;
+  realized_pnl?: number;
 }
 
 export interface OrderRequest {
@@ -153,7 +154,40 @@ export interface PortfolioSummary {
   totalPnlPercent: number;
   dayPnl: number;
   dayPnlPercent: number;
+  realizedPnl: number;
+  netPnl: number;
   positions: Position[];
+}
+
+export interface PortfolioAnalyticsItem {
+  label: string;
+  value: number;
+  percent: number;
+}
+
+export interface PortfolioAnalyticsTrade {
+  ticker: string;
+  realizedPnl: number;
+  timestamp: Date;
+}
+
+export interface PortfolioAnalyticsDay {
+  date: string;
+  realizedPnl: number;
+  trades: number;
+}
+
+export interface PortfolioAnalytics {
+  realizedPnl: number;
+  unrealizedPnl: number;
+  netPnl: number;
+  winRate: number;
+  totalClosedTrades: number;
+  bestTrade: PortfolioAnalyticsTrade | null;
+  worstTrade: PortfolioAnalyticsTrade | null;
+  allocationByAssetClass: PortfolioAnalyticsItem[];
+  allocationByProduct: PortfolioAnalyticsItem[];
+  dailyPnl: PortfolioAnalyticsDay[];
 }
 
 // ─── Strategy Analytics ─────────────────────────────────────
@@ -181,6 +215,7 @@ export interface Transaction {
   charges?: number;
   gross_total?: number;
   net_total?: number;
+  realized_pnl?: number;
   strategy_tag: StrategyTag;
   product: ProductType;
   status: OrderStatus;

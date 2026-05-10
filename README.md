@@ -88,13 +88,20 @@ Create `backend/.env` from `backend/.env.example`. Market data now prefers Upsto
 
 ```env
 MARKET_DATA_PROVIDER=upstox
-UPSTOX_ACCESS_TOKEN=your_upstox_access_token
+
+# Either paste a direct token, or configure OAuth and connect from the top-bar provider panel.
+UPSTOX_ACCESS_TOKEN=
+UPSTOX_API_KEY=
+UPSTOX_API_SECRET=
+UPSTOX_REDIRECT_URI=http://localhost:3000
 
 # Optional Groww fallback
 GROWW_API_KEY=
 GROWW_API_SECRET=
 GROWW_ACCESS_TOKEN=
 ```
+
+The frontend provider panel can open the Upstox OAuth login URL and exchange the returned `code` for a local runtime token stored at `backend/.upstox-token.json` by default. That file is ignored by git.
 
 Useful live checks:
 

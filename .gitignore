@@ -30,6 +30,7 @@ yarn-error.log*
 backend/.env
 backend/.env.*
 !backend/.env.example
+backend/.upstox-token.json
 
 # vercel
 .vercel

@@ -15,7 +15,11 @@ NEXT_PUBLIC_API_URL=http://localhost:8001
 ### Backend (`backend/.env`)
 Use `backend/.env.example` as base:
 - `MARKET_DATA_PROVIDER=upstox` prefers Upstox for market data, with Groww fallback
-- `UPSTOX_ACCESS_TOKEN`
+- `UPSTOX_ACCESS_TOKEN` for a direct token, or OAuth fields below
+- `UPSTOX_API_KEY`
+- `UPSTOX_API_SECRET`
+- `UPSTOX_REDIRECT_URI=http://localhost:3000`
+- Optional `UPSTOX_TOKEN_FILE=backend/.upstox-token.json`
 - `GROWW_API_KEY`
 - `GROWW_API_SECRET`
 - Optional `GROWW_ACCESS_TOKEN`
@@ -23,6 +27,7 @@ Use `backend/.env.example` as base:
 
 Provider behavior:
 - Upstox powers quotes, batch LTP/OHLC, candles, F&O resolution, option chain, stock lists, indices, and streams when `UPSTOX_ACCESS_TOKEN` is configured.
+- If OAuth fields are configured, use the top-bar provider panel to open the Upstox login URL and exchange the returned `code`. Runtime tokens are stored locally and are not committed.
 - Groww remains the fallback market-data provider and is still used for Groww-specific order, holdings, positions, fundamentals, and public charting fallbacks.
 - Request coalescing, TTL caches, and short cooldowns are enabled in `backend/main.py` to reduce rate-limit pressure.
 
@@ -52,7 +57,7 @@ Use this when hosting the frontend on Vercel and the FastAPI backend on Azure Ap
 
 ### App settings to add in Azure
 - `MARKET_DATA_PROVIDER=upstox`
-- `UPSTOX_ACCESS_TOKEN`
+- `UPSTOX_ACCESS_TOKEN` or `UPSTOX_API_KEY` + `UPSTOX_API_SECRET` + `UPSTOX_REDIRECT_URI`
 - `GROWW_API_KEY`
 - `GROWW_API_SECRET`
 - Optional `GROWW_ACCESS_TOKEN`
@@ -81,7 +86,10 @@ bash startup.sh
    - Verify `NEXT_PUBLIC_API_URL` points to 8001
 2. **CORS blocked**
    - Set `CORS_ALLOW_ORIGINS` correctly
-3. **Groww auth failures**
+3. **Upstox not connected**
+   - Check `/api/status` for `providers.upstox.missing_auth_fields`
+   - Generate a fresh OAuth code from the provider panel if the runtime token has expired
+4. **Groww auth failures**
    - Check startup logs for missing key/secret warning
-4. **Slow/no live ticks**
+5. **Slow/no live ticks**
    - Validate backend `/api/stream/*` endpoints first

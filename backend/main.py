@@ -26,7 +26,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 # Load environment variables from backend/.env
@@ -175,6 +175,13 @@ GROWW_API_BASE = "https://api.groww.in/v1"
 GROWW_API_KEY = os.getenv("GROWW_API_KEY", "")
 GROWW_API_SECRET = os.getenv("GROWW_API_SECRET", "")
 UPSTOX_API_BASE = os.getenv("UPSTOX_API_BASE", "https://api.upstox.com").rstrip("/")
+UPSTOX_API_KEY = os.getenv("UPSTOX_API_KEY", "")
+UPSTOX_API_SECRET = os.getenv("UPSTOX_API_SECRET", "")
+UPSTOX_REDIRECT_URI = os.getenv("UPSTOX_REDIRECT_URI", "")
+UPSTOX_TOKEN_FILE = os.getenv(
+    "UPSTOX_TOKEN_FILE",
+    os.path.join(os.path.dirname(__file__), ".upstox-token.json"),
+)
 MARKET_DATA_PROVIDER = os.getenv("MARKET_DATA_PROVIDER", "upstox").strip().lower()
 
 
@@ -187,6 +194,8 @@ def _clean_access_token(value: str) -> str:
 
 GROWW_ACCESS_TOKEN = _clean_access_token(os.getenv("GROWW_ACCESS_TOKEN", ""))
 UPSTOX_ACCESS_TOKEN = _clean_access_token(os.getenv("UPSTOX_ACCESS_TOKEN", ""))
+_upstox_runtime_access_token = UPSTOX_ACCESS_TOKEN
+_upstox_token_meta: dict = {"source": "env_access_token"} if UPSTOX_ACCESS_TOKEN else {}
 
 UPSTOX_INSTRUMENT_URLS = {
     "NSE": "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
@@ -210,8 +219,137 @@ UPSTOX_INDEX_KEYS = {
 }
 
 
+def _upstox_token_file_path(token_file: str | None = None) -> str:
+    return os.path.abspath(token_file or UPSTOX_TOKEN_FILE)
+
+
+def _upstox_next_token_expiry(now: datetime | None = None) -> datetime:
+    """Upstox OAuth tokens expire daily; use the next 03:30 IST boundary."""
+    current = now.astimezone(IST) if now else datetime.now(IST)
+    cutoff = current.replace(hour=3, minute=30, second=0, microsecond=0)
+    if current >= cutoff:
+        cutoff = cutoff + timedelta(days=1)
+    return cutoff
+
+
+def _parse_upstox_expiry(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=IST)
+        return parsed.astimezone(IST)
+    except Exception:
+        return None
+
+
+def _set_upstox_runtime_token(
+    access_token: str,
+    expires_at: str | None = None,
+    profile: dict | None = None,
+    token_file: str | None = None,
+) -> dict:
+    """Set and persist a runtime Upstox token obtained through OAuth."""
+    global _upstox_runtime_access_token, _upstox_token_meta
+
+    token = _clean_access_token(access_token)
+    if not token:
+        raise ValueError("Upstox access token is empty")
+
+    expiry = expires_at or _upstox_next_token_expiry().isoformat()
+    meta = {
+        "source": "oauth_runtime",
+        "expires_at": expiry,
+        "profile": profile or {},
+        "saved_at": datetime.now(IST).isoformat(),
+    }
+    payload = {"access_token": token, **meta}
+
+    path = _upstox_token_file_path(token_file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    _upstox_runtime_access_token = token
+    _upstox_token_meta = meta
+    return meta
+
+
+def _load_upstox_token_file(token_file: str | None = None) -> str:
+    """Load a persisted runtime token if it exists and is not expired."""
+    global _upstox_runtime_access_token, _upstox_token_meta
+
+    path = _upstox_token_file_path(token_file)
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        token = _clean_access_token(payload.get("access_token", ""))
+        expiry = _parse_upstox_expiry(payload.get("expires_at"))
+        if expiry and expiry <= datetime.now(IST):
+            _upstox_token_meta = {
+                "source": "oauth_runtime",
+                "expired": True,
+                "expires_at": payload.get("expires_at"),
+            }
+            return ""
+        if not token:
+            return ""
+        _upstox_runtime_access_token = token
+        _upstox_token_meta = {
+            "source": payload.get("source", "oauth_runtime"),
+            "expires_at": payload.get("expires_at"),
+            "profile": payload.get("profile", {}),
+            "saved_at": payload.get("saved_at"),
+        }
+        return token
+    except Exception as exc:
+        _upstox_token_meta = {
+            "source": "token_file",
+            "error": str(exc),
+        }
+        return ""
+
+
+def _get_upstox_access_token(token_file: str | None = None) -> str:
+    if _upstox_runtime_access_token:
+        return _upstox_runtime_access_token
+    if UPSTOX_ACCESS_TOKEN:
+        return UPSTOX_ACCESS_TOKEN
+    return _load_upstox_token_file(token_file)
+
+
+def _clear_upstox_runtime_token(token_file: str | None = None) -> None:
+    global _upstox_runtime_access_token, _upstox_token_meta
+    _upstox_runtime_access_token = UPSTOX_ACCESS_TOKEN
+    _upstox_token_meta = {"source": "env_access_token"} if UPSTOX_ACCESS_TOKEN else {}
+    path = _upstox_token_file_path(token_file)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as exc:
+        _upstox_token_meta = {"source": "token_file", "error": str(exc)}
+
+
+def _is_upstox_auth_flow_configured() -> bool:
+    return bool(UPSTOX_API_KEY and UPSTOX_API_SECRET and UPSTOX_REDIRECT_URI)
+
+
+def _missing_upstox_auth_fields() -> list[str]:
+    missing = []
+    if not UPSTOX_API_KEY:
+        missing.append("UPSTOX_API_KEY")
+    if not UPSTOX_API_SECRET:
+        missing.append("UPSTOX_API_SECRET")
+    if not UPSTOX_REDIRECT_URI:
+        missing.append("UPSTOX_REDIRECT_URI")
+    return missing
+
+
 def _is_upstox_configured() -> bool:
-    return bool(UPSTOX_ACCESS_TOKEN)
+    return bool(_get_upstox_access_token())
 
 
 def _market_provider_order() -> list[str]:
@@ -447,6 +585,7 @@ def _get_upstox_http_client() -> httpx.AsyncClient:
 @app.on_event("startup")
 async def _startup():
     _validate_startup_env()
+    _get_upstox_access_token()
     if _is_upstox_configured():
         print("[EquityFlow] Startup: Upstox access token configured; Upstox is preferred for market data.")
     elif MARKET_DATA_PROVIDER != "groww":
@@ -629,6 +768,11 @@ class CommodityQuote(StockQuote):
     unit: str
     expiry: str
     lotSize: int
+
+
+class UpstoxTokenRequest(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
 
 
 # â”€â”€â”€ Order Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1069,7 +1213,8 @@ async def _upstox_get_uncached(path: str, params: dict | None = None) -> dict | 
     """Make an authenticated GET request to Upstox API via persistent client."""
     global _upstox_rate_limited_until, _upstox_last_429_log_at, _upstox_last_error, _upstox_last_success_at
 
-    if not _is_upstox_configured():
+    token = _get_upstox_access_token()
+    if not token:
         return None
 
     now_ts = time.time()
@@ -1089,7 +1234,7 @@ async def _upstox_get_uncached(path: str, params: dict | None = None) -> dict | 
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {UPSTOX_ACCESS_TOKEN}",
+                "Authorization": f"Bearer {token}",
             },
             params=params,
         )
@@ -1931,10 +2076,17 @@ async def api_status():
     now_ts = time.time()
     groww_cooldown = max(0, int(_groww_rate_limited_until - now_ts))
     upstox_cooldown = max(0, int(_upstox_rate_limited_until - now_ts))
+    upstox_configured = _is_upstox_configured()
+    upstox_auth_flow_configured = _is_upstox_auth_flow_configured()
     upstox_status = {
-        "configured": _is_upstox_configured(),
-        "connected": _is_upstox_configured() and upstox_cooldown == 0,
-        "auth_mode": "access_token" if _is_upstox_configured() else "",
+        "configured": upstox_configured,
+        "connected": upstox_configured and upstox_cooldown == 0,
+        "auth_mode": _upstox_token_meta.get("source", "access_token") if upstox_configured else "",
+        "auth_configured": upstox_auth_flow_configured,
+        "auth_url_available": bool(UPSTOX_API_KEY and UPSTOX_REDIRECT_URI),
+        "missing_auth_fields": _missing_upstox_auth_fields(),
+        "token_source": _upstox_token_meta.get("source", ""),
+        "token_expires_at": _upstox_token_meta.get("expires_at"),
         "rate_limited_for_sec": upstox_cooldown,
         "last_error": _upstox_last_error,
         "last_success_at": _upstox_last_success_at,
@@ -1976,7 +2128,7 @@ async def api_status():
     preferred = _market_provider_order()[0]
     connected = bool(upstox_status["connected"] or groww_status["connected"])
     if preferred == "upstox" and not upstox_status["configured"]:
-        degraded_reason = "UPSTOX_ACCESS_TOKEN missing; falling back to Groww"
+        degraded_reason = "Upstox token missing; falling back to Groww"
     elif preferred == "upstox" and upstox_cooldown:
         degraded_reason = f"Upstox rate limited for {upstox_cooldown}s"
     elif preferred == "groww" and groww_cooldown:
@@ -1986,7 +2138,7 @@ async def api_status():
         "connected": connected,
         "provider": preferred,
         "provider_order": _market_provider_order(),
-        "auth_mode": "upstox_access_token" if upstox_status["configured"] else groww_status.get("auth_mode", ""),
+        "auth_mode": f"upstox_{upstox_status['auth_mode']}" if upstox_status["configured"] else groww_status.get("auth_mode", ""),
         "degraded_reason": degraded_reason,
         "rate_limited_for_sec": max(upstox_cooldown, groww_cooldown),
         "last_error": _upstox_last_error or _groww_last_error,
@@ -1995,6 +2147,124 @@ async def api_status():
             "upstox": upstox_status,
             "groww": groww_status,
         },
+    }
+
+
+@app.get("/api/upstox/auth/url")
+async def upstox_auth_url(state: str = Query("equityflow")):
+    """Build the Upstox OAuth authorization URL for the configured app."""
+    missing = [field for field in ("UPSTOX_API_KEY", "UPSTOX_REDIRECT_URI") if not globals().get(field)]
+    if missing:
+        return {
+            "configured": False,
+            "missing": missing,
+            "url": "",
+        }
+
+    params = urlencode({
+        "response_type": "code",
+        "client_id": UPSTOX_API_KEY,
+        "redirect_uri": UPSTOX_REDIRECT_URI,
+        "state": state,
+    })
+    return {
+        "configured": True,
+        "url": f"{UPSTOX_API_BASE}/v2/login/authorization/dialog?{params}",
+        "redirect_uri": UPSTOX_REDIRECT_URI,
+    }
+
+
+@app.post("/api/upstox/auth/token")
+async def upstox_exchange_token(payload: UpstoxTokenRequest):
+    """Exchange an Upstox OAuth code for a runtime token and persist it locally."""
+    global _upstox_rate_limited_until, _upstox_last_error
+
+    if not _is_upstox_auth_flow_configured():
+        raise HTTPException(status_code=400, detail={
+            "message": "Upstox OAuth app is not configured",
+            "missing": _missing_upstox_auth_fields(),
+        })
+
+    code = (payload.code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code is required")
+
+    redirect_uri = payload.redirect_uri or UPSTOX_REDIRECT_URI
+    client = _get_upstox_http_client()
+    try:
+        res = await client.post(
+            "/v2/login/authorization/token",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "code": code,
+                "client_id": UPSTOX_API_KEY,
+                "client_secret": UPSTOX_API_SECRET,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upstox token exchange failed: {exc}") from exc
+
+    try:
+        response_payload = res.json()
+    except Exception:
+        response_payload = {"raw": res.text[:500]}
+
+    if res.status_code != 200:
+        _upstox_last_error = {
+            "type": f"auth_http_{res.status_code}",
+            "body": response_payload,
+            "timestamp": datetime.now(IST).isoformat(),
+        }
+        raise HTTPException(status_code=res.status_code, detail=response_payload)
+
+    token = (
+        response_payload.get("access_token")
+        or response_payload.get("data", {}).get("access_token")
+        or response_payload.get("token")
+    )
+    if not token:
+        raise HTTPException(status_code=502, detail="Upstox token response did not include access_token")
+
+    expires_at = (
+        response_payload.get("expires_at")
+        or response_payload.get("expiry")
+        or response_payload.get("data", {}).get("expires_at")
+        or response_payload.get("data", {}).get("expiry")
+        or _upstox_next_token_expiry().isoformat()
+    )
+    profile = {
+        key: response_payload.get(key)
+        for key in ("user_id", "user_name", "email", "user_type", "broker")
+        if response_payload.get(key) is not None
+    }
+    if response_payload.get("data") and isinstance(response_payload["data"], dict):
+        for key in ("user_id", "user_name", "email", "user_type", "broker"):
+            if key in response_payload["data"]:
+                profile[key] = response_payload["data"][key]
+
+    meta = _set_upstox_runtime_token(token, expires_at=expires_at, profile=profile)
+    _upstox_rate_limited_until = 0
+    _upstox_last_error = {}
+    return {
+        "connected": True,
+        "token_source": meta.get("source"),
+        "token_expires_at": meta.get("expires_at"),
+        "profile": meta.get("profile", {}),
+    }
+
+
+@app.delete("/api/upstox/auth/token")
+async def upstox_disconnect_token():
+    """Remove the locally persisted Upstox runtime token."""
+    _clear_upstox_runtime_token()
+    return {
+        "connected": _is_upstox_configured(),
+        "token_source": _upstox_token_meta.get("source", ""),
     }
 
 

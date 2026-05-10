@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
 import { PortfolioSummaryCard, HoldingsList } from "@/components/portfolio/holdings";
+import { PortfolioAnalyticsPanel } from "@/components/portfolio/portfolio-analytics";
 import { PositionsSection } from "@/components/portfolio/positions-section";
 import { OrdersHistory } from "@/components/portfolio/orders-history";
 import { usePortfolio } from "@/hooks/usePortfolio";
@@ -147,8 +148,8 @@ export default function PortfolioPage() {
             <span className="terminal-badge rounded-sm px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]">
               Net {formatCurrency(netWorth)}
             </span>
-            <span className={cn("rounded-sm border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]", getPriceChangeColor(summary.totalPnl))}>
-              P&L {summary.totalPnl >= 0 ? "+" : ""}{formatCurrency(summary.totalPnl)} ({formatPercentage(summary.totalPnlPercent)})
+            <span className={cn("rounded-sm border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]", getPriceChangeColor(summary.netPnl))}>
+              P&L {summary.netPnl >= 0 ? "+" : ""}{formatCurrency(summary.netPnl)} ({formatPercentage(summary.totalInvested > 0 ? (summary.netPnl / summary.totalInvested) * 100 : 0)})
             </span>
             <span className="terminal-subtle font-mono text-[10px] uppercase tracking-[0.1em]">
               {positions.length} holdings · {pendingOrders} open orders · {exposure.toFixed(2)}% deployed
@@ -165,6 +166,8 @@ export default function PortfolioPage() {
       </div>
 
       <PortfolioSummaryCard />
+
+      <PortfolioAnalyticsPanel />
 
       <div className="grid gap-2 md:grid-cols-4">
         {pageActions.map((action) => (

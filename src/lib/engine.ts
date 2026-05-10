@@ -12,6 +12,7 @@ import {
   type Transaction,
   type User,
   type PortfolioSummary,
+  type PortfolioAnalytics,
   type StrategyPerformance,
   type StrategyTag,
   STRATEGY_TAGS,
@@ -106,6 +107,7 @@ export interface VirtualPortfolioManager {
   removeHolding(positionId: string): { success: boolean; message: string };
   updatePositionLTP(ticker: string, ltp: number): boolean;
   getPortfolioSummary(): PortfolioSummary;
+  getPortfolioAnalytics(): PortfolioAnalytics;
 
   // Transactions
   getTransactions(): Transaction[];
@@ -137,6 +139,13 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
     if (isFutureContract || isOptionContract) return "fno";
     return "equity";
+  }
+
+  function getAssetClassLabel(ticker: string): string {
+    const segment = getOrderSegment(ticker);
+    if (segment === "fno") return "F&O";
+    if (segment === "commodity") return "Commodity";
+    return "Equity";
   }
 
   function getPendingSellLockedQty(ticker: string, product: string): number {
@@ -227,8 +236,9 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     return { ok: true };
   }
 
-  function reduceSellPositions(order: Order): boolean {
+  function reduceSellPositions(order: Order, executedPrice: number, sellCharges = 0): { ok: boolean; realizedPnl: number } {
     let remaining = order.quantity;
+    let realizedPnl = 0;
     const candidates = database.positions
       .map((position, index) => ({ position, index }))
       .filter(({ position }) => position.ticker === order.ticker && position.product === order.product)
@@ -239,13 +249,15 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       });
 
     const totalAvailable = candidates.reduce((sum, { position }) => sum + position.quantity, 0);
-    if (totalAvailable < order.quantity) return false;
+    if (totalAvailable < order.quantity) return { ok: false, realizedPnl: 0 };
 
     for (const { position } of candidates) {
       if (remaining <= 0) break;
 
       const exitQty = Math.min(position.quantity, remaining);
       const nextQty = position.quantity - exitQty;
+      const chargeShare = order.quantity > 0 ? sellCharges * (exitQty / order.quantity) : 0;
+      realizedPnl += ((executedPrice - position.avg_price) * exitQty) - chargeShare;
       remaining -= exitQty;
 
       if (nextQty <= 0) {
@@ -263,7 +275,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     }
 
     database.positions = database.positions.filter((position) => position.quantity > 0);
-    return remaining === 0;
+    return { ok: remaining === 0, realizedPnl: roundMoney(realizedPnl) };
   }
 
   function applyExecution(order: Order, executedPrice: number, executedAt: Date) {
@@ -300,12 +312,13 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         database.user.virtual_balance = roundMoney(database.user.virtual_balance - charges.netAmount);
       }
     } else {
-      const reduced = reduceSellPositions(order);
-      if (!reduced) {
+      const reduced = reduceSellPositions(order, executedPrice, charges.total);
+      if (!reduced.ok) {
         order.status = "REJECTED";
         order.status_note = "Rejected: insufficient holdings";
         return false;
       }
+      order.realized_pnl = reduced.realizedPnl;
       database.user.virtual_balance = roundMoney(database.user.virtual_balance + charges.netAmount);
     }
 
@@ -371,6 +384,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       charges: charges.total,
       gross_total: turnover,
       net_total: charges.netAmount,
+      realized_pnl: order.realized_pnl,
       strategy_tag: order.strategy_tag,
       product: order.product,
       status: "COMPLETED",
@@ -732,11 +746,13 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         charges: charges.total,
         gross_total: charges.turnover,
         net_total: charges.netAmount,
+        realized_pnl: roundMoney((exitPrice - position.avg_price) * position.quantity - charges.total),
         strategy_tag: position.strategy_tag,
         product: position.product,
         status: "COMPLETED",
         timestamp: now,
       };
+      order.realized_pnl = transaction.realized_pnl;
 
       database.orders.push(order);
       database.transactions.push(transaction);
@@ -767,6 +783,10 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       const totalInvested = positions.reduce((s, p) => s + p.invested, 0);
       const currentValue = positions.reduce((s, p) => s + p.current_value, 0);
       const totalPnl = currentValue - totalInvested;
+      const realizedPnl = database.transactions
+        .filter((transaction) => transaction.type === "SELL")
+        .reduce((sum, transaction) => sum + (transaction.realized_pnl ?? 0), 0);
+      const netPnl = totalPnl + realizedPnl;
       const totalPnlPercent = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
       const dayPnl = positions.reduce((s, p) => s + p.day_pnl, 0);
       const dayPnlPercent = totalInvested > 0 ? (dayPnl / totalInvested) * 100 : 0;
@@ -778,7 +798,72 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         totalPnlPercent: parseFloat(totalPnlPercent.toFixed(2)),
         dayPnl: parseFloat(dayPnl.toFixed(2)),
         dayPnlPercent: parseFloat(dayPnlPercent.toFixed(2)),
+        realizedPnl: parseFloat(realizedPnl.toFixed(2)),
+        netPnl: parseFloat(netPnl.toFixed(2)),
         positions,
+      };
+    },
+
+    getPortfolioAnalytics(): PortfolioAnalytics {
+      const summary = this.getPortfolioSummary();
+      const closedTrades = database.transactions
+        .filter((transaction) => transaction.type === "SELL" && typeof transaction.realized_pnl === "number")
+        .map((transaction) => ({
+          ticker: transaction.ticker,
+          realizedPnl: roundMoney(transaction.realized_pnl ?? 0),
+          timestamp: transaction.timestamp,
+        }));
+      const winningTrades = closedTrades.filter((trade) => trade.realizedPnl > 0);
+      const totalCurrentValue = database.positions.reduce((sum, position) => sum + position.current_value, 0);
+
+      const allocationByAssetClass = Array.from(
+        database.positions.reduce((map, position) => {
+          const label = getAssetClassLabel(position.ticker);
+          map.set(label, (map.get(label) ?? 0) + position.current_value);
+          return map;
+        }, new Map<string, number>())
+      ).map(([label, value]) => ({
+        label,
+        value: roundMoney(value),
+        percent: totalCurrentValue > 0 ? roundMoney((value / totalCurrentValue) * 100) : 0,
+      }));
+
+      const allocationByProduct = Array.from(
+        database.positions.reduce((map, position) => {
+          map.set(position.product, (map.get(position.product) ?? 0) + position.current_value);
+          return map;
+        }, new Map<string, number>())
+      ).map(([label, value]) => ({
+        label,
+        value: roundMoney(value),
+        percent: totalCurrentValue > 0 ? roundMoney((value / totalCurrentValue) * 100) : 0,
+      }));
+
+      const dailyPnl = Array.from(
+        database.transactions
+          .filter((transaction) => transaction.type === "SELL" && typeof transaction.realized_pnl === "number")
+          .reduce((map, transaction) => {
+            const date = transaction.timestamp.toISOString().slice(0, 10);
+            const current = map.get(date) ?? { date, realizedPnl: 0, trades: 0 };
+            current.realizedPnl = roundMoney(current.realizedPnl + (transaction.realized_pnl ?? 0));
+            current.trades += 1;
+            map.set(date, current);
+            return map;
+          }, new Map<string, { date: string; realizedPnl: number; trades: number }>())
+          .values()
+      ).sort((a, b) => a.date.localeCompare(b.date));
+
+      return {
+        realizedPnl: summary.realizedPnl,
+        unrealizedPnl: summary.totalPnl,
+        netPnl: summary.netPnl,
+        winRate: closedTrades.length > 0 ? roundMoney((winningTrades.length / closedTrades.length) * 100) : 0,
+        totalClosedTrades: closedTrades.length,
+        bestTrade: closedTrades.length > 0 ? closedTrades.reduce((best, trade) => trade.realizedPnl > best.realizedPnl ? trade : best) : null,
+        worstTrade: closedTrades.length > 0 ? closedTrades.reduce((worst, trade) => trade.realizedPnl < worst.realizedPnl ? trade : worst) : null,
+        allocationByAssetClass,
+        allocationByProduct,
+        dailyPnl,
       };
     },
 

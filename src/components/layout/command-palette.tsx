@@ -2,13 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, CandlestickChart, Command, Eye, Search, ShoppingCart, TrendingDown, TrendingUp, X } from "lucide-react";
+import { Bell, CandlestickChart, Command, Eye, PanelsTopLeft, Search, ShoppingCart, TrendingDown, TrendingUp, X } from "lucide-react";
 import { StockLogo } from "@/components/market/stock-logo";
 import { useToast } from "@/components/toast-provider";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useLayoutMode } from "@/hooks/useLayoutMode";
 import { useStockSearch } from "@/hooks/useStockData";
-import { addChartToSavedLayout } from "@/lib/chart-layouts";
+import { addChartToSavedLayout, applyChartLayoutPreset, CHART_LAYOUT_PRESETS } from "@/lib/chart-layouts";
 import { MOCK_STOCKS } from "@/lib/constants";
 import { addTickerToWatchlist } from "@/lib/watchlists";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -100,6 +100,15 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     close();
   };
 
+  const applyLayout = (presetId: string) => {
+    const result = applyChartLayoutPreset(presetId);
+    if (!result) return;
+    setMode("tabs");
+    router.push("/");
+    toast({ title: "Layout Applied", description: `${result.preset.label} loaded in tabs mode.`, variant: "success" });
+    close();
+  };
+
   const actions: PaletteAction[] = (() => {
     const raw = query.trim();
     const parts = raw.split(/\s+/).filter(Boolean);
@@ -154,6 +163,24 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         ticker,
         run: () => createAlert(ticker, parsedCondition, price),
       });
+    }
+
+    if (command === "layout") {
+      const layoutQuery = (parts[1] ?? "").toLowerCase();
+      const presets = CHART_LAYOUT_PRESETS.filter((preset) => (
+        !layoutQuery
+        || preset.id.startsWith(layoutQuery)
+        || preset.label.toLowerCase().includes(layoutQuery)
+      ));
+      for (const preset of presets) {
+        items.push({
+          id: `layout-${preset.id}`,
+          label: `Load ${preset.label}`,
+          meta: preset.description,
+          icon: PanelsTopLeft,
+          run: () => applyLayout(preset.id),
+        });
+      }
     }
 
     const searchMatches = (results ?? []).slice(0, 7).map((stock) => ({

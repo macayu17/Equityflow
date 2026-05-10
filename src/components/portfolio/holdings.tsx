@@ -55,11 +55,12 @@ export function PortfolioSummaryCard() {
   const netWorth = balance + summary.currentValue;
   const deployedPercent = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
   const cashPercent = Math.max(0, 100 - deployedPercent);
+  const netPnlPercent = summary.totalInvested > 0 ? (summary.netPnl / summary.totalInvested) * 100 : 0;
 
   const cards = [
     { label: "Invested", value: summary.totalInvested, color: "terminal-fg" },
     { label: "Current Value", value: summary.currentValue, color: "terminal-fg" },
-    { label: "Total Returns", value: summary.totalPnl, pct: summary.totalPnlPercent, dynamic: true },
+    { label: "Net P&L", value: summary.netPnl, pct: netPnlPercent, dynamic: true },
     { label: "Day Returns", value: summary.dayPnl, pct: summary.dayPnlPercent, dynamic: true },
   ];
 

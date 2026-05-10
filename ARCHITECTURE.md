@@ -4,8 +4,8 @@
 EquityFlow is a full-stack paper-trading sandbox.
 
 - Frontend: Next.js 14 + TypeScript (port 3000)
-- Backend: FastAPI Groww proxy + SSE streams (port 8001)
-- Data layer: Groww live APIs + local virtual portfolio state
+- Backend: FastAPI Upstox-preferred/Groww-fallback proxy + SSE streams (port 8001)
+- Data layer: Upstox/Groww live APIs + local virtual portfolio state
 
 ## Components
 
@@ -16,7 +16,8 @@ EquityFlow is a full-stack paper-trading sandbox.
 - `lib/engine.ts`: localStorage-backed virtual order/position engine
 
 ### Backend (`backend/main.py`)
-- Groww auth/token flow (`GROWW_API_KEY`, `GROWW_API_SECRET`, optional `GROWW_ACCESS_TOKEN`)
+- Upstox auth flow (`UPSTOX_ACCESS_TOKEN` or OAuth via `UPSTOX_API_KEY`, `UPSTOX_API_SECRET`, `UPSTOX_REDIRECT_URI`)
+- Groww fallback auth/token flow (`GROWW_API_KEY`, `GROWW_API_SECRET`, optional `GROWW_ACCESS_TOKEN`)
 - Market data routes: quote/ltp/ohlc/candles/option-chain/greeks
 - Trading routes: create/modify/cancel/status/list
 - Portfolio routes: holdings/positions

@@ -3,7 +3,7 @@
  * All data comes from the live backend API.
  */
 
-import { apiGetJson, apiPostJson } from "@/services/request-cache";
+import { apiDeleteJson, apiGetJson, apiPostJson, clearApiRequestCache } from "@/services/request-cache";
 import type { StockQuote, StockSearchResult, CandleData, MarketIndex, MarketDepth, SparklinePoint } from "@/lib/types";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | null> {
@@ -15,9 +15,29 @@ async function apiPost<T>(path: string, body: unknown): Promise<T | null> {
 }
 
 // â”€â”€â”€ API Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export async function getApiStatus(): Promise<ApiStatus> {
-  const data = await apiFetch<ApiStatus>("/api/status");
+export async function getApiStatus(forceOrContext?: unknown): Promise<ApiStatus> {
+  const force = typeof forceOrContext === "boolean" ? forceOrContext : false;
+  const data = await apiGetJson<ApiStatus>("/api/status", { force });
   return data ?? { connected: false, reason: "Backend offline" };
+}
+
+export async function getUpstoxAuthUrl(): Promise<UpstoxAuthUrlResponse | null> {
+  return apiGetJson<UpstoxAuthUrlResponse>("/api/upstox/auth/url", { force: true, ttlMs: 0 });
+}
+
+export async function exchangeUpstoxCode(code: string, redirectUri?: string): Promise<UpstoxTokenResponse | null> {
+  const result = await apiPostJson<UpstoxTokenResponse>("/api/upstox/auth/token", {
+    code,
+    redirect_uri: redirectUri,
+  });
+  clearApiRequestCache();
+  return result;
+}
+
+export async function disconnectUpstox(): Promise<UpstoxDisconnectResponse | null> {
+  const result = await apiDeleteJson<UpstoxDisconnectResponse>("/api/upstox/auth/token");
+  clearApiRequestCache();
+  return result;
 }
 
 // â”€â”€â”€ Stock Quotes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -100,10 +120,34 @@ export interface ApiStatus {
     connected?: boolean;
     reason?: string;
     auth_mode?: string;
+    auth_configured?: boolean;
+    auth_url_available?: boolean;
+    missing_auth_fields?: string[];
+    token_source?: string;
+    token_expires_at?: string | null;
     rate_limited_for_sec?: number;
     last_error?: Record<string, unknown>;
     last_success_at?: string | null;
   }>;
+}
+
+export interface UpstoxAuthUrlResponse {
+  configured: boolean;
+  missing?: string[];
+  url?: string;
+  redirect_uri?: string;
+}
+
+export interface UpstoxTokenResponse {
+  connected: boolean;
+  token_source?: string;
+  token_expires_at?: string;
+  profile?: Record<string, unknown>;
+}
+
+export interface UpstoxDisconnectResponse {
+  connected: boolean;
+  token_source?: string;
 }
 
 export interface WorkstationSnapshot {

@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect, useSyncExternalStore } from "react";
 import { getPortfolioManager, type VirtualPortfolioManager } from "@/lib/engine";
-import type { OrderRequest, Position, Transaction, PortfolioSummary, StrategyPerformance, Order } from "@/lib/types";
+import type { OrderRequest, Position, Transaction, PortfolioSummary, StrategyPerformance, Order, PortfolioAnalytics } from "@/lib/types";
 import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import type { MarketSegment } from "@/lib/market-hours";
 import { apiGetJson } from "@/services/request-cache";
@@ -182,8 +182,24 @@ export function usePortfolio() {
         dayPnl: 0,
         dayPnlPercent: 0,
         positions: [],
+        realizedPnl: 0,
+        netPnl: 0,
       };
   const strategies: StrategyPerformance[] = hydrated ? manager.getStrategyPerformance() : [];
+  const analytics: PortfolioAnalytics = hydrated
+    ? manager.getPortfolioAnalytics()
+    : {
+        realizedPnl: 0,
+        unrealizedPnl: 0,
+        netPnl: 0,
+        winRate: 0,
+        totalClosedTrades: 0,
+        bestTrade: null,
+        worstTrade: null,
+        allocationByAssetClass: [],
+        allocationByProduct: [],
+        dailyPnl: [],
+      };
 
   return {
     user,
@@ -192,6 +208,7 @@ export function usePortfolio() {
     transactions,
     orders,
     summary,
+    analytics,
     strategies,
     placeOrder,
     updateLTP,

@@ -135,6 +135,22 @@ export async function apiPostJson<T>(path: string, body: unknown): Promise<T | n
   }
 }
 
+export async function apiDeleteJson<T>(path: string): Promise<T | null> {
+  try {
+    const res = await fetch(toUrl(path), {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      console.warn(`[EquityFlow API] ${path} failed with HTTP ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    console.warn(`[EquityFlow API] ${path} request error`, err);
+    return null;
+  }
+}
+
 export function clearApiRequestCache() {
   responseCache.clear();
   inFlight.clear();

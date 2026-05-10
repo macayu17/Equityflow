@@ -12,7 +12,7 @@ import { useAlerts } from "@/hooks/useAlerts";
 import { useLayoutMode } from "@/hooks/useLayoutMode";
 import { useAllStreamPrices, useStreamPrice } from "@/hooks/usePriceStream";
 import { usePortfolio } from "@/hooks/usePortfolio";
-import { loadChartLayout, MAX_TAB_CHARTS, saveChartLayout } from "@/lib/chart-layouts";
+import { CHART_LAYOUT_PRESETS, loadChartLayout, MAX_TAB_CHARTS, saveChartLayout, type SavedChartLayout } from "@/lib/chart-layouts";
 import { FNO_UNDERLYINGS, MOCK_COMMODITIES, MOCK_STOCKS } from "@/lib/constants";
 import { cn, formatCurrency, formatNumber, formatPercentage, getPriceChangeColor } from "@/lib/utils";
 import type { OrderType, Timeframe } from "@/lib/types";
@@ -409,6 +409,12 @@ function MultiChartBoard({
     if (next) setSelectedSymbol(next);
   };
 
+  const applyPreset = (preset: SavedChartLayout) => {
+    setCharts(preset.charts);
+    setSyncTimeframe(preset.syncTimeframe);
+    setTimeframe(preset.timeframe);
+  };
+
   return (
     <div className="space-y-3">
       <div className="terminal-fill rounded-sm border border-[color:var(--terminal-border)]">
@@ -460,6 +466,17 @@ function MultiChartBoard({
         </div>
 
         <div className="flex gap-1.5 overflow-x-auto px-3 py-2">
+          {CHART_LAYOUT_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              title={preset.description}
+              className="flex items-center gap-1.5 rounded-sm border border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--terminal-accent)] transition-colors hover:bg-[var(--terminal-accent)] hover:text-black"
+              onClick={() => applyPreset(preset)}
+            >
+              {preset.label}
+            </button>
+          ))}
           {CHART_SYMBOLS.slice(0, 12).map((ticker) => {
             const active = charts.includes(ticker);
             return (
@@ -546,6 +563,19 @@ function PowerUserTabs({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
     };
     window.addEventListener("equityflow-add-chart", handleAddChart);
     return () => window.removeEventListener("equityflow-add-chart", handleAddChart);
+  }, []);
+
+  useEffect(() => {
+    const handleApplyLayout = (event: Event) => {
+      const detail = (event as CustomEvent<{ layout?: SavedChartLayout }>).detail;
+      if (!detail?.layout) return;
+      setActiveTab("Charts");
+      setCharts(detail.layout.charts);
+      setSyncTimeframe(detail.layout.syncTimeframe);
+      setTimeframe(detail.layout.timeframe);
+    };
+    window.addEventListener("equityflow-apply-chart-layout", handleApplyLayout);
+    return () => window.removeEventListener("equityflow-apply-chart-layout", handleApplyLayout);
   }, []);
 
   const tabContent = useMemo(() => {

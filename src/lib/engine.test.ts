@@ -99,4 +99,68 @@ describe("portfolio trading engine", () => {
     });
     expect(manager.getBalance()).toBeCloseTo(100000 - 1001.19, 2);
   });
+
+  it("records realized pnl on partial exits and keeps remaining cost basis stable", () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({ price: 100, market_ltp: 100, quantity: 10 })).success).toBe(true);
+    const sell = manager.placeOrder(baseOrder({
+      type: "SELL",
+      price: 125,
+      market_ltp: 125,
+      quantity: 4,
+    }));
+
+    expect(sell.success).toBe(true);
+    expect(sell.order?.realized_pnl).toBe(99);
+    expect(manager.getTransactions()[0]).toMatchObject({
+      type: "SELL",
+      ticker: "RELIANCE",
+      realized_pnl: 99,
+    });
+    expect(manager.getPosition("RELIANCE")).toMatchObject({
+      quantity: 6,
+      avg_price: 100.12,
+      invested: 600.72,
+      current_value: 600,
+    });
+    expect(manager.getPortfolioSummary()).toMatchObject({
+      realizedPnl: 99,
+      totalPnl: -0.72,
+    });
+  });
+
+  it("rejects F&O orders that are not in whole lots", () => {
+    const manager = getPortfolioManager();
+
+    const result = manager.placeOrder(baseOrder({
+      ticker: "NIFTY261225300CE",
+      stockName: "NIFTY 25300 CE",
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 66,
+      lot_size: 65,
+    }));
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("multiples of lot size 65");
+    expect(manager.getOrders()).toHaveLength(0);
+  });
+
+  it("returns portfolio analytics with realized wins and allocation", () => {
+    const manager = getPortfolioManager();
+
+    manager.placeOrder(baseOrder({ price: 100, market_ltp: 100, quantity: 10, ticker: "RELIANCE" }));
+    manager.placeOrder(baseOrder({ price: 125, market_ltp: 125, quantity: 4, ticker: "RELIANCE", type: "SELL" }));
+    manager.placeOrder(baseOrder({ price: 200, market_ltp: 200, quantity: 2, ticker: "TCS", stockName: "TCS Ltd" }));
+
+    const analytics = manager.getPortfolioAnalytics();
+
+    expect(analytics.realizedPnl).toBe(99);
+    expect(analytics.winRate).toBe(100);
+    expect(analytics.bestTrade?.ticker).toBe("RELIANCE");
+    expect(analytics.allocationByAssetClass.find((item) => item.label === "Equity")?.value).toBeGreaterThan(0);
+    expect(analytics.dailyPnl.length).toBeGreaterThan(0);
+  });
 });

@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useFnoQuote, useOptionChain } from "@/hooks/useStockData";
 import { cn, formatCurrency } from "@/lib/utils";
 import { FNO_UNDERLYINGS, FNO_EXPIRY_DATES, generateMockFutures, generateMockOptionChain } from "@/lib/constants";
-import { CandlestickChart, ArrowUpRight, ArrowDownRight, ChevronDown } from "lucide-react";
+import { Activity, BarChart3, CandlestickChart, ArrowUpRight, ArrowDownRight, ChevronDown, Crosshair, Gauge } from "lucide-react";
 import { MarketStatusBadge } from "@/components/market/market-status";
 import { StockChart } from "@/components/market/stock-chart";
 import { OrderPad } from "@/components/trading/order-pad";
@@ -137,6 +137,41 @@ function FnoPageContent() {
 
     return [];
   }, [optionChain, underlying.ticker, underlying.lotSize, spotPrice, expiry]);
+
+  const optionProMetrics = useMemo(() => {
+    const rows = optionChainRows;
+    const totalCallOi = rows.reduce((sum, row) => sum + row.ce.openInterest, 0);
+    const totalPutOi = rows.reduce((sum, row) => sum + row.pe.openInterest, 0);
+    const pcr = totalCallOi > 0 ? totalPutOi / totalCallOi : 0;
+    const atm = rows.reduce(
+      (closest, row) => Math.abs(row.strikePrice - spotPrice) < Math.abs(closest - spotPrice) ? row.strikePrice : closest,
+      rows[0]?.strikePrice ?? spotPrice
+    );
+    const maxCall = rows.length ? rows.reduce((best, row) => row.ce.openInterest > best.ce.openInterest ? row : best, rows[0]) : null;
+    const maxPut = rows.length ? rows.reduce((best, row) => row.pe.openInterest > best.pe.openInterest ? row : best, rows[0]) : null;
+    const avgCallIv = rows.length ? rows.reduce((sum, row) => sum + row.ce.iv, 0) / rows.length : 0;
+    const avgPutIv = rows.length ? rows.reduce((sum, row) => sum + row.pe.iv, 0) / rows.length : 0;
+    const maxPain = rows.reduce((best, candidate) => {
+      const pain = rows.reduce((sum, row) => (
+        sum
+        + row.ce.openInterest * Math.max(0, candidate.strikePrice - row.strikePrice)
+        + row.pe.openInterest * Math.max(0, row.strikePrice - candidate.strikePrice)
+      ), 0);
+      return pain < best.pain ? { strike: candidate.strikePrice, pain } : best;
+    }, { strike: atm, pain: Number.POSITIVE_INFINITY });
+
+    return {
+      totalCallOi,
+      totalPutOi,
+      pcr,
+      atm,
+      maxPain: maxPain.strike,
+      maxCallStrike: maxCall?.strikePrice ?? 0,
+      maxPutStrike: maxPut?.strikePrice ?? 0,
+      avgIv: (avgCallIv + avgPutIv) / 2,
+      ivSkew: avgPutIv - avgCallIv,
+    };
+  }, [optionChainRows, spotPrice]);
 
   const futures = useMemo<FutureRow[]>(() => {
     return generateMockFutures(underlying.ticker, underlying.name, spotPrice, underlying.lotSize).map((fut, index) => {
@@ -311,6 +346,29 @@ function FnoPageContent() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+            {[
+              { label: "PCR", value: optionProMetrics.pcr.toFixed(2), meta: "Put/Call OI", icon: BarChart3 },
+              { label: "Max Pain", value: optionProMetrics.maxPain.toFixed(0), meta: "OI payout min", icon: Crosshair },
+              { label: "ATM", value: optionProMetrics.atm.toFixed(0), meta: "Nearest strike", icon: Gauge },
+              { label: "Avg IV", value: `${optionProMetrics.avgIv.toFixed(1)}%`, meta: `Skew ${optionProMetrics.ivSkew >= 0 ? "+" : ""}${optionProMetrics.ivSkew.toFixed(1)}`, icon: Activity },
+              { label: "Call Wall", value: optionProMetrics.maxCallStrike.toFixed(0), meta: `${(optionProMetrics.totalCallOi / 100000).toFixed(1)}L OI`, icon: ArrowUpRight },
+              { label: "Put Wall", value: optionProMetrics.maxPutStrike.toFixed(0), meta: `${(optionProMetrics.totalPutOi / 100000).toFixed(1)}L OI`, icon: ArrowDownRight },
+            ].map((metric) => {
+              const Icon = metric.icon;
+              return (
+                <div key={metric.label} className="terminal-panel p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="terminal-subtle text-[10px] font-bold uppercase tracking-[0.1em]">{metric.label}</span>
+                    <Icon size={13} className="text-[var(--terminal-accent)]" />
+                  </div>
+                  <div className="terminal-number text-base font-bold text-[var(--terminal-fg)]">{metric.value}</div>
+                  <div className="terminal-subtle mt-1 truncate font-mono text-[10px]">{metric.meta}</div>
+                </div>
+              );
+            })}
           </div>
 
           {/* Option Chain Table */}
@@ -522,7 +580,7 @@ function FnoPageContent() {
       )}
 
       <p className="text-2xs text-center text-muted dark:text-muted-dark">
-        Paper trading F&O — all data from Groww API when available
+        Paper trading F&O - data uses the preferred provider first with fallback when available
       </p>
 
       {/* F&O Order Pad */}

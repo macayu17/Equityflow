@@ -11,6 +11,47 @@ export interface SavedChartLayout {
   timeframe: Timeframe;
 }
 
+export interface ChartLayoutPreset extends SavedChartLayout {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export const CHART_LAYOUT_PRESETS: ChartLayoutPreset[] = [
+  {
+    id: "market",
+    label: "Market Monitor",
+    description: "Large-cap tape with banks and IT",
+    charts: ["RELIANCE", "HDFCBANK", "TCS", "INFY"],
+    syncTimeframe: true,
+    timeframe: "3M",
+  },
+  {
+    id: "banking",
+    label: "Bank Desk",
+    description: "Private and PSU banking leaders",
+    charts: ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK"],
+    syncTimeframe: true,
+    timeframe: "1M",
+  },
+  {
+    id: "momentum",
+    label: "Momentum",
+    description: "High-beta daily movers",
+    charts: ["TATAMOTORS", "BAJFINANCE", "TATASTEEL", "MARUTI"],
+    syncTimeframe: true,
+    timeframe: "1M",
+  },
+  {
+    id: "defensive",
+    label: "Defensive",
+    description: "FMCG, pharma and telecom",
+    charts: ["ITC", "SUNPHARMA", "BHARTIARTL", "NTPC"],
+    syncTimeframe: true,
+    timeframe: "6M",
+  },
+];
+
 export function normalizeChartTicker(ticker: string) {
   return ticker.trim().toUpperCase();
 }
@@ -60,4 +101,26 @@ export function addChartToSavedLayout(ticker: string) {
   saveChartLayout(next);
   window.dispatchEvent(new CustomEvent("equityflow-add-chart", { detail: { ticker: symbol } }));
   return next;
+}
+
+export function getChartLayoutPreset(id: string) {
+  const key = id.trim().toLowerCase();
+  return CHART_LAYOUT_PRESETS.find((preset) => preset.id === key || preset.label.toLowerCase().startsWith(key));
+}
+
+export function applyChartLayoutPreset(id: string) {
+  const preset = getChartLayoutPreset(id);
+  if (!preset) return null;
+  const next: SavedChartLayout = {
+    charts: sanitizeCharts(preset.charts),
+    syncTimeframe: preset.syncTimeframe,
+    timeframe: preset.timeframe,
+  };
+  saveChartLayout(next);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("equityflow-apply-chart-layout", {
+      detail: { layout: next, presetId: preset.id },
+    }));
+  }
+  return { preset, layout: next };
 }

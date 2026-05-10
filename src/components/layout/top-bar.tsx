@@ -6,6 +6,7 @@ import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { LayoutModeSwitcher } from "@/components/layout/layout-mode-switcher";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { ProviderStatusPanel } from "@/components/layout/provider-status-panel";
 import { ThemeToggleButton } from "@/components/layout/theme-toggle-button";
 
 export function TopBar() {
@@ -55,6 +56,7 @@ export function TopBar() {
         </button>
 
         <div className="flex items-center gap-2">
+          <ProviderStatusPanel />
           <ThemeToggleButton variant="topbar" />
           <LayoutModeSwitcher />
         </div>
