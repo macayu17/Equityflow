@@ -163,4 +163,85 @@ describe("portfolio trading engine", () => {
     expect(analytics.allocationByAssetClass.find((item) => item.label === "Equity")?.value).toBeGreaterThan(0);
     expect(analytics.dailyPnl.length).toBeGreaterThan(0);
   });
+
+  it("keeps stop-loss market orders pending until the trigger is crossed", async () => {
+    const manager = getPortfolioManager();
+    manager.placeOrder(baseOrder({ price: 100, market_ltp: 100, quantity: 10 }));
+
+    const stop = manager.placeOrder(baseOrder({
+      type: "SELL",
+      price: 98,
+      trigger_price: 96,
+      market_ltp: 100,
+      quantity: 5,
+      variety: "SL-M",
+    }));
+
+    expect(stop.success).toBe(true);
+    expect(stop.order?.status).toBe("PENDING");
+    expect(stop.order?.status_note).toContain("trigger");
+
+    const quiet = await manager.processPendingOrders(async () => ({ openPrice: 100, ltp: 97 }));
+    expect(quiet.executed).toBe(0);
+    expect(manager.getOrders()[0].status).toBe("PENDING");
+
+    const triggered = await manager.processPendingOrders(async () => ({ openPrice: 95, ltp: 95 }));
+    expect(triggered.executed).toBe(1);
+    expect(manager.getOrders()[0]).toMatchObject({
+      status: "COMPLETED",
+      filled_quantity: 5,
+      remaining_quantity: 0,
+      executed_price: 95,
+    });
+  });
+
+  it("records partial fills and leaves remaining quantity open", async () => {
+    const manager = getPortfolioManager();
+
+    const order = manager.placeOrder(baseOrder({
+      price: 99,
+      market_ltp: 105,
+      quantity: 10,
+      variety: "LIMIT",
+    }));
+
+    expect(order.success).toBe(true);
+    expect(order.order?.status).toBe("PENDING");
+
+    const firstPass = await manager.processPendingOrders(async () => ({
+      openPrice: 99,
+      ltp: 99,
+      availableQuantity: 4,
+    }));
+
+    expect(firstPass.executed).toBe(1);
+    expect(manager.getOrders()[0]).toMatchObject({
+      status: "PARTIAL",
+      filled_quantity: 4,
+      remaining_quantity: 6,
+    });
+    expect(manager.getPosition("RELIANCE")?.quantity).toBe(4);
+  });
+
+  it("exposes margin and risk metrics for F&O orders and portfolio", () => {
+    const manager = getPortfolioManager();
+
+    const result = manager.placeOrder(baseOrder({
+      ticker: "NIFTY261225300CE",
+      stockName: "NIFTY 25300 CE",
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 65,
+      lot_size: 65,
+    }));
+
+    expect(result.success).toBe(true);
+    expect(result.order?.margin_required).toBeGreaterThan(0);
+
+    const risk = manager.getRiskSummary();
+    expect(risk.marginUsed).toBeGreaterThan(0);
+    expect(risk.marginAvailable).toBeGreaterThan(0);
+    expect(risk.warnings.length).toBeGreaterThanOrEqual(0);
+  });
 });

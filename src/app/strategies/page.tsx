@@ -1,6 +1,7 @@
 "use client";
 
 import { StrategyDashboard } from "@/components/portfolio/strategy-dashboard";
+import { StrategyBuilder } from "@/components/strategies/strategy-builder";
 import { BarChart3 } from "lucide-react";
 
 export default function StrategiesPage() {
@@ -20,6 +21,7 @@ export default function StrategiesPage() {
         </p>
       </div>
 
+      <StrategyBuilder />
       <StrategyDashboard />
     </div>
   );

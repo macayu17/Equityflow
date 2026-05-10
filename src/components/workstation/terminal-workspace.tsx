@@ -7,19 +7,21 @@ import { MarketIndexRibbon } from "@/components/market/index-ribbon";
 import { StockLogo } from "@/components/market/stock-logo";
 import { StockChart } from "@/components/market/stock-chart";
 import { OrderPad } from "@/components/trading/order-pad";
+import { ReplayLab } from "@/components/workstation/replay-lab";
 import { useToast } from "@/components/toast-provider";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useLayoutMode } from "@/hooks/useLayoutMode";
 import { useAllStreamPrices, useStreamPrice } from "@/hooks/usePriceStream";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { CHART_LAYOUT_PRESETS, loadChartLayout, MAX_TAB_CHARTS, saveChartLayout, type SavedChartLayout } from "@/lib/chart-layouts";
+import { ALERT_METRIC_LABELS, describeAlertRule, evaluateAlertRule, type AlertMetric, type AlertMetricSnapshot, type AlertOperator } from "@/lib/alerts";
 import { FNO_UNDERLYINGS, MOCK_COMMODITIES, MOCK_STOCKS } from "@/lib/constants";
 import { cn, formatCurrency, formatNumber, formatPercentage, getPriceChangeColor } from "@/lib/utils";
-import type { OrderType, Timeframe } from "@/lib/types";
+import type { OrderType, OrderVariety, Timeframe } from "@/lib/types";
 
 const CORE_SYMBOLS = ["RELIANCE", "HDFCBANK", "TCS", "INFY", "ICICIBANK", "SBIN", "ITC", "BHARTIARTL", "LT", "AXISBANK", "BAJFINANCE", "TATAMOTORS"];
 const CHART_SYMBOLS = Array.from(new Set(CORE_SYMBOLS.concat(["SUNPHARMA", "MARUTI", "HCLTECH", "NTPC", "KOTAKBANK", "TATASTEEL"])));
-const TAB_ITEMS = ["Charts", "NIFTY", "Portfolio", "Orders"] as const;
+const TAB_ITEMS = ["Charts", "NIFTY", "Replay", "Portfolio", "Orders"] as const;
 
 type OrderDraft = {
   ticker: string;
@@ -28,6 +30,9 @@ type OrderDraft = {
   type: OrderType;
   lotSize?: number;
   defaultQuantity?: number;
+  defaultVariety?: OrderVariety;
+  defaultLimitPrice?: number;
+  defaultTriggerPrice?: number;
 } | null;
 
 function stockMeta(ticker: string) {
@@ -117,12 +122,12 @@ function QuoteBoard({ title, symbols, onTrade }: { title: string; symbols: strin
 }
 
 function PortfolioRail() {
-  const { balance, summary, positions, orders } = usePortfolio();
+  const { balance, summary, risk, positions } = usePortfolio();
   const cells = [
     { label: "Cash", value: formatCurrency(balance), tone: "text-[var(--terminal-accent)]" },
     { label: "Current", value: formatCurrency(summary.currentValue), tone: "terminal-fg" },
     { label: "P&L", value: `${summary.totalPnl >= 0 ? "+" : ""}${formatCurrency(summary.totalPnl)}`, tone: summary.totalPnl >= 0 ? "text-profit" : "text-loss" },
-    { label: "Orders", value: String(orders.length), tone: "text-info" },
+    { label: "Risk", value: `${risk.riskScore}/100`, tone: risk.riskScore > 65 ? "text-loss" : risk.riskScore > 35 ? "text-warning" : "text-info" },
   ];
 
   return (
@@ -139,6 +144,11 @@ function PortfolioRail() {
           </div>
         ))}
       </div>
+      {risk.warnings[0] && (
+        <div className="border-b border-[color:var(--terminal-grid)] px-3 py-2 text-[10px] text-warning">
+          {risk.warnings[0].message}
+        </div>
+      )}
       <div className="max-h-[220px] overflow-y-auto">
         {positions.length === 0 ? (
           <div className="terminal-subtle px-3 py-5 text-center text-[11px]">No open paper positions</div>
@@ -212,7 +222,6 @@ function FnoMiniChain({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
             type="button"
             className="terminal-action h-6 px-1.5 text-[10px]"
             onClick={() => onTrade({ ticker: underlying.ticker, name: underlying.name, ltp: underlying.ltp, type: "BUY", lotSize: underlying.lotSize })}
-            disabled
           >
             Trade
           </button>
@@ -304,17 +313,18 @@ function chartHeight(count: number) {
 }
 
 function AlertsPanel({ defaultTicker }: { defaultTicker: string }) {
-  const { alerts, addAlert, removeAlert, clearTriggered } = useAlerts();
+  const { alerts, addAdvancedAlert, removeAlert, clearTriggered } = useAlerts();
   const [ticker, setTicker] = useState(defaultTicker);
-  const [condition, setCondition] = useState<"above" | "below">("above");
-  const [price, setPrice] = useState(() => String(stockMeta(defaultTicker)?.ltp ?? ""));
+  const [metric, setMetric] = useState<AlertMetric>("price");
+  const [operator, setOperator] = useState<AlertOperator>(">=");
+  const [value, setValue] = useState(() => String(stockMeta(defaultTicker)?.ltp ?? ""));
   const activeAlerts = alerts.filter((alert) => alert.status === "ACTIVE");
 
   const createAlert = () => {
-    const triggerPrice = Number(price);
-    if (!ticker || !Number.isFinite(triggerPrice) || triggerPrice <= 0) return;
-    addAlert(ticker, condition, triggerPrice);
-    setPrice("");
+    const triggerValue = Number(value);
+    if (!ticker || !Number.isFinite(triggerValue) || triggerValue <= 0) return;
+    addAdvancedAlert(ticker, { metric, operator, value: triggerValue });
+    setValue("");
   };
 
   return (
@@ -323,21 +333,26 @@ function AlertsPanel({ defaultTicker }: { defaultTicker: string }) {
         <h2 className="terminal-title">Alerts</h2>
         <span className="terminal-subtle font-mono text-[10px]">{activeAlerts.length} active</span>
       </div>
-      <div className="grid gap-2 p-3 md:grid-cols-[110px_90px_1fr_74px]">
+      <div className="grid gap-2 p-3 md:grid-cols-[104px_110px_74px_1fr_74px]">
         <select value={ticker} onChange={(event) => setTicker(event.target.value)} className="terminal-input h-8 rounded-sm px-2 font-mono text-[11px]">
           {CHART_SYMBOLS.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}
         </select>
-        <select value={condition} onChange={(event) => setCondition(event.target.value as "above" | "below")} className="terminal-input h-8 rounded-sm px-2 font-mono text-[11px]">
-          <option value="above">Above</option>
-          <option value="below">Below</option>
+        <select value={metric} onChange={(event) => setMetric(event.target.value as AlertMetric)} className="terminal-input h-8 rounded-sm px-2 font-mono text-[11px]">
+          {(Object.keys(ALERT_METRIC_LABELS) as AlertMetric[]).map((item) => (
+            <option key={item} value={item}>{ALERT_METRIC_LABELS[item]}</option>
+          ))}
+        </select>
+        <select value={operator} onChange={(event) => setOperator(event.target.value as AlertOperator)} className="terminal-input h-8 rounded-sm px-2 font-mono text-[11px]">
+          <option value=">=">&gt;=</option>
+          <option value="<=">&lt;=</option>
         </select>
         <input
           type="number"
           min={0.01}
-          step={0.05}
-          value={price}
-          onChange={(event) => setPrice(event.target.value)}
-          placeholder="Trigger price"
+          step={metric === "price" ? 0.05 : 0.01}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="Trigger value"
           className="terminal-input h-8 rounded-sm px-2 font-mono text-[11px] outline-none"
         />
         <button type="button" onClick={createAlert} className="terminal-action h-8 px-2 text-[10px]">
@@ -352,7 +367,7 @@ function AlertsPanel({ defaultTicker }: { defaultTicker: string }) {
             <div key={alert.id} className="terminal-row grid-cols-[70px_1fr_70px_28px] gap-2">
               <span className="font-mono font-bold text-[var(--terminal-accent)]">{alert.ticker}</span>
               <span className="terminal-muted truncate">
-                {alert.condition === "above" ? "Crosses above" : "Drops below"} {formatCurrency(alert.price)}
+                {describeAlertRule(alert.rule ?? { metric: "price", operator: alert.condition === "above" ? ">=" : "<=", value: alert.price })}
               </span>
               <span className={cn("font-mono text-[10px]", alert.status === "ACTIVE" ? "text-profit" : "text-warning")}>{alert.status}</span>
               <button type="button" title="Remove alert" onClick={() => removeAlert(alert.id)} className="terminal-action h-6 px-1">
@@ -591,6 +606,7 @@ function PowerUserTabs({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
         />
       );
     }
+    if (activeTab === "Replay") return <ReplayLab />;
     if (activeTab === "Portfolio") return <PortfolioRail />;
     if (activeTab === "Orders") return <ClassicBrokerage onTrade={onTrade} />;
     if (activeTab === "NIFTY") return <FnoMiniChain onTrade={onTrade} />;
@@ -629,7 +645,14 @@ export function TerminalWorkspace() {
 
   useEffect(() => {
     const handleOpenOrder = (event: Event) => {
-      const detail = (event as CustomEvent<{ ticker?: string; type?: OrderType; quantity?: number }>).detail;
+      const detail = (event as CustomEvent<{
+        ticker?: string;
+        type?: OrderType;
+        quantity?: number;
+        variety?: OrderVariety;
+        price?: number;
+        triggerPrice?: number;
+      }>).detail;
       const ticker = detail?.ticker?.trim().toUpperCase();
       if (!ticker) return;
       const fallback = stockMeta(ticker);
@@ -641,6 +664,9 @@ export function TerminalWorkspace() {
         ltp,
         type: detail?.type === "SELL" ? "SELL" : "BUY",
         defaultQuantity: Math.max(1, Number(detail?.quantity) || 1),
+        defaultVariety: detail?.variety,
+        defaultLimitPrice: detail?.price,
+        defaultTriggerPrice: detail?.triggerPrice,
       });
     };
     window.addEventListener("equityflow-open-order", handleOpenOrder);
@@ -651,14 +677,24 @@ export function TerminalWorkspace() {
     for (const alert of alerts) {
       if (alert.status !== "ACTIVE") continue;
       const fallback = stockMeta(alert.ticker);
-      const ltp = prices[alert.ticker]?.ltp ?? fallback?.ltp ?? 0;
+      const live = prices[alert.ticker];
+      const ltp = live?.ltp ?? fallback?.ltp ?? 0;
       if (ltp <= 0) continue;
-      const triggered = alert.condition === "above" ? ltp >= alert.price : ltp <= alert.price;
+      const rule = alert.rule ?? { metric: "price" as const, operator: alert.condition === "above" ? ">=" as const : "<=" as const, value: alert.price };
+      const snapshot: AlertMetricSnapshot = {
+        price: ltp,
+        changePercent: live?.changePercent ?? fallback?.changePercent,
+        volume: fallback?.volume,
+        pcr: undefined,
+        iv: undefined,
+        oiChange: undefined,
+      };
+      const triggered = evaluateAlertRule(rule, snapshot);
       if (!triggered) continue;
-      triggerAlert(alert.id, ltp);
+      triggerAlert(alert.id, ltp, snapshot[rule.metric], snapshot);
       toast({
         title: `Alert Triggered: ${alert.ticker}`,
-        description: `${alert.ticker} is ${formatCurrency(ltp)} (${alert.condition} ${formatCurrency(alert.price)}).`,
+        description: `${alert.ticker} ${describeAlertRule(rule)}. Last price ${formatCurrency(ltp)}.`,
         variant: "success",
       });
       if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
@@ -704,6 +740,9 @@ export function TerminalWorkspace() {
           defaultType={orderDraft.type}
           lotSize={orderDraft.lotSize}
           defaultQuantity={orderDraft.defaultQuantity}
+          defaultVariety={orderDraft.defaultVariety}
+          defaultLimitPrice={orderDraft.defaultLimitPrice}
+          defaultTriggerPrice={orderDraft.defaultTriggerPrice}
         />
       )}
     </div>

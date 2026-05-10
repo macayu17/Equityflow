@@ -21,6 +21,10 @@ export async function getApiStatus(forceOrContext?: unknown): Promise<ApiStatus>
   return data ?? { connected: false, reason: "Backend offline" };
 }
 
+export async function getApiDiagnostics(): Promise<ApiDiagnostics | null> {
+  return apiGetJson<ApiDiagnostics>("/api/diagnostics", { ttlMs: 10_000 });
+}
+
 export async function getUpstoxAuthUrl(): Promise<UpstoxAuthUrlResponse | null> {
   return apiGetJson<UpstoxAuthUrlResponse>("/api/upstox/auth/url", { force: true, ttlMs: 0 });
 }
@@ -129,6 +133,39 @@ export interface ApiStatus {
     last_error?: Record<string, unknown>;
     last_success_at?: string | null;
   }>;
+}
+
+export interface ProviderCacheDiagnostics {
+  entries: number;
+  fresh: number;
+  stale: number;
+  inflight: number;
+  max_entries: number;
+}
+
+export interface ApiDiagnostics {
+  provider_order: string[];
+  generated_at: string;
+  providers: Record<string, {
+    configured?: boolean;
+    rate_limited_for_sec?: number;
+    last_error?: Record<string, unknown>;
+    last_success_at?: string | null;
+    cache?: ProviderCacheDiagnostics;
+    token_source?: string;
+    instrument_index?: {
+      loaded_exchanges?: string[];
+      symbols?: number;
+      derivatives?: number;
+    };
+  }>;
+  sse: {
+    stocks: number;
+    commodities: number;
+    indices: number;
+    ohlc: number;
+    last_refresh_age_sec?: number | null;
+  };
 }
 
 export interface UpstoxAuthUrlResponse {

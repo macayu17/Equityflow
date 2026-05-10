@@ -86,9 +86,9 @@ export interface MarketDepth {
 
 // ─── Orders & Trading ───────────────────────────────────────
 export type OrderType = "BUY" | "SELL";
-export type OrderVariety = "MARKET" | "LIMIT";
+export type OrderVariety = "MARKET" | "LIMIT" | "SL" | "SL-M";
 export type ProductType = "DELIVERY" | "INTRADAY";
-export type OrderStatus = "COMPLETED" | "PENDING" | "CANCELLED" | "REJECTED";
+export type OrderStatus = "COMPLETED" | "PENDING" | "PARTIAL" | "CANCELLED" | "REJECTED";
 
 export interface Order {
   id: string;
@@ -96,6 +96,7 @@ export interface Order {
   ticker: string;
   stockName: string;
   price: number;
+  trigger_price?: number;
   quantity: number;
   variety: OrderVariety;
   product: ProductType;
@@ -113,6 +114,12 @@ export interface Order {
   gross_total?: number;
   net_total?: number;
   realized_pnl?: number;
+  filled_quantity?: number;
+  remaining_quantity?: number;
+  avg_execution_price?: number;
+  margin_required?: number;
+  margin_released?: number;
+  rejection_reason?: string;
 }
 
 export interface OrderRequest {
@@ -120,6 +127,7 @@ export interface OrderRequest {
   ticker: string;
   stockName: string;
   price: number;
+  trigger_price?: number;
   market_ltp?: number;
   lot_size?: number;
   quantity: number;
@@ -156,7 +164,27 @@ export interface PortfolioSummary {
   dayPnlPercent: number;
   realizedPnl: number;
   netPnl: number;
+  marginUsed: number;
+  marginAvailable: number;
+  grossExposure: number;
+  leverage: number;
+  riskScore: number;
   positions: Position[];
+}
+
+export interface RiskWarning {
+  level: "info" | "warning" | "danger";
+  message: string;
+}
+
+export interface PortfolioRiskSummary {
+  grossExposure: number;
+  marginUsed: number;
+  marginAvailable: number;
+  leverage: number;
+  riskScore: number;
+  concentration: PortfolioAnalyticsItem[];
+  warnings: RiskWarning[];
 }
 
 export interface PortfolioAnalyticsItem {

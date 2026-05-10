@@ -2150,6 +2150,65 @@ async def api_status():
     }
 
 
+@app.get("/api/diagnostics")
+async def api_diagnostics():
+    """Expose lightweight provider/cache diagnostics for the frontend desk."""
+    now_ts = time.time()
+
+    def cache_stats(cache: dict, inflight: dict, max_entries: int) -> dict:
+        fresh = 0
+        stale = 0
+        for entry in cache.values():
+            if entry.get("expires_at", 0) > now_ts:
+                fresh += 1
+            else:
+                stale += 1
+        return {
+            "entries": len(cache),
+            "fresh": fresh,
+            "stale": stale,
+            "inflight": len(inflight),
+            "max_entries": max_entries,
+        }
+
+    groww_cooldown = max(0, int(_groww_rate_limited_until - now_ts))
+    upstox_cooldown = max(0, int(_upstox_rate_limited_until - now_ts))
+
+    return {
+        "provider_order": _market_provider_order(),
+        "generated_at": datetime.now(IST).isoformat(),
+        "providers": {
+            "upstox": {
+                "configured": _is_upstox_configured(),
+                "rate_limited_for_sec": upstox_cooldown,
+                "last_error": _upstox_last_error,
+                "last_success_at": _upstox_last_success_at,
+                "cache": cache_stats(_upstox_get_cache, _upstox_get_inflight, _upstox_max_cache_entries),
+                "instrument_index": {
+                    "loaded_exchanges": sorted(_upstox_instruments_loaded),
+                    "symbols": len(_upstox_symbol_index),
+                    "derivatives": sum(len(items) for items in _upstox_derivative_index.values()),
+                },
+            },
+            "groww": {
+                "configured": _is_api_configured() or bool(GROWW_ACCESS_TOKEN),
+                "rate_limited_for_sec": groww_cooldown,
+                "last_error": _groww_last_error,
+                "last_success_at": _groww_last_success_at,
+                "cache": cache_stats(_groww_get_cache, _groww_get_inflight, _groww_max_cache_entries),
+                "token_source": _token_cache.get("source", ""),
+            },
+        },
+        "sse": {
+            "stocks": len(_sse_groww_cache),
+            "commodities": len(_sse_groww_commodity_cache),
+            "indices": len(_sse_groww_index_cache),
+            "ohlc": len(_sse_groww_ohlc_cache),
+            "last_refresh_age_sec": max(0, int(now_ts - _sse_groww_ts)) if _sse_groww_ts else None,
+        },
+    }
+
+
 @app.get("/api/upstox/auth/url")
 async def upstox_auth_url(state: str = Query("equityflow")):
     """Build the Upstox OAuth authorization URL for the configured app."""

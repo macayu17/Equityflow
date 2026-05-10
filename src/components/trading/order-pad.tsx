@@ -10,6 +10,7 @@ import { StockLogo } from "@/components/market/stock-logo";
 import type { OrderType, OrderVariety, ProductType, StrategyTag } from "@/lib/types";
 import { STRATEGY_TAGS } from "@/lib/types";
 import { estimateTradeCharges } from "@/lib/trading-charges";
+import { estimateRequiredMargin } from "@/lib/risk-engine";
 
 interface OrderPadProps {
   open: boolean;
@@ -22,6 +23,9 @@ interface OrderPadProps {
   defaultStrategyTag?: StrategyTag;
   lotSize?: number; // F&O lot size (1 for equities, >1 for F&O)
   defaultQuantity?: number;
+  defaultVariety?: OrderVariety;
+  defaultLimitPrice?: number;
+  defaultTriggerPrice?: number;
 }
 
 export function OrderPad({
@@ -35,6 +39,9 @@ export function OrderPad({
   defaultStrategyTag = "Manual",
   lotSize = 1,
   defaultQuantity = 1,
+  defaultVariety = "MARKET",
+  defaultLimitPrice,
+  defaultTriggerPrice,
 }: OrderPadProps) {
   const { balance, placeOrder } = usePortfolio();
   const { toast } = useToast();
@@ -42,11 +49,12 @@ export function OrderPad({
   const isFnO = lotSize > 1;
 
   const [orderType, setOrderType] = useState<OrderType>(defaultType);
-  const [variety, setVariety] = useState<OrderVariety>("MARKET");
+  const [variety, setVariety] = useState<OrderVariety>(defaultVariety);
   const [product, setProduct] = useState<ProductType>(defaultProduct ?? (isFnO ? "INTRADAY" : "DELIVERY"));
   const [strategyTag, setStrategyTag] = useState<StrategyTag>(defaultStrategyTag);
   const [quantity, setQuantity] = useState(1); // For F&O: number of lots; For equity: shares
-  const [limitPrice, setLimitPrice] = useState(ltp);
+  const [limitPrice, setLimitPrice] = useState(defaultLimitPrice ?? ltp);
+  const [triggerPrice, setTriggerPrice] = useState(defaultTriggerPrice ?? ltp);
 
   useEffect(() => {
     if (!open) return;
@@ -54,12 +62,13 @@ export function OrderPad({
     setOrderType(defaultType);
     setProduct(defaultProduct ?? (isFnO ? "INTRADAY" : "DELIVERY"));
     setStrategyTag(defaultStrategyTag);
-    setVariety("MARKET");
+    setVariety(defaultVariety);
     setQuantity(initialQuantity);
-    setLimitPrice(ltp);
-  }, [open, ticker, ltp, defaultType, defaultProduct, defaultStrategyTag, isFnO, defaultQuantity, lotSize]);
+    setLimitPrice(defaultLimitPrice ?? ltp);
+    setTriggerPrice(defaultTriggerPrice ?? ltp);
+  }, [open, ticker, ltp, defaultType, defaultProduct, defaultStrategyTag, isFnO, defaultQuantity, lotSize, defaultVariety, defaultLimitPrice, defaultTriggerPrice]);
 
-  const effectivePrice = variety === "MARKET" ? ltp : limitPrice;
+  const effectivePrice = variety === "MARKET" || variety === "SL-M" ? ltp : limitPrice;
   const totalQuantity = isFnO ? quantity * lotSize : quantity;
   const isBuy = orderType === "BUY";
   const charges = estimateTradeCharges({
@@ -69,16 +78,26 @@ export function OrderPad({
     quantity: totalQuantity,
     segment: isFnO ? "fno" : "equity",
   });
-  const hasValidOrder = effectivePrice > 0 && totalQuantity > 0;
+  const margin = estimateRequiredMargin({
+    type: orderType,
+    ticker,
+    product,
+    price: effectivePrice,
+    quantity: totalQuantity,
+    lotSize,
+  });
+  const upfrontDebit = margin.required;
+  const requiresTrigger = variety === "SL" || variety === "SL-M";
+  const hasValidOrder = effectivePrice > 0 && totalQuantity > 0 && (!requiresTrigger || triggerPrice > 0);
 
   const handleSubmit = () => {
-    if (!hasValidOrder || (isBuy && balance < charges.netAmount)) {
-      const insufficientFunds = isBuy && hasValidOrder && balance < charges.netAmount;
+    if (!hasValidOrder || (isBuy && balance < upfrontDebit)) {
+      const insufficientFunds = isBuy && hasValidOrder && balance < upfrontDebit;
       toast({
         title: insufficientFunds ? "Insufficient Funds" : "Price Required",
         description: insufficientFunds
-          ? `Required ${formatCurrency(charges.netAmount)}, available ${formatCurrency(balance)}.`
-          : "Order entry needs a valid executable price.",
+          ? `Required ${formatCurrency(upfrontDebit)}, available ${formatCurrency(balance)}.`
+          : requiresTrigger ? "Stop-loss orders need a valid trigger price." : "Order entry needs a valid executable price.",
         variant: "error",
       });
       return;
@@ -98,6 +117,7 @@ export function OrderPad({
       ticker,
       stockName,
       price: effectivePrice,
+      trigger_price: requiresTrigger ? triggerPrice : undefined,
       market_ltp: ltp,
       lot_size: lotSize,
       quantity: totalQuantity,
@@ -217,7 +237,7 @@ export function OrderPad({
                 Order Type
               </label>
               <div className="grid grid-cols-2 gap-1.5">
-                {(["MARKET", "LIMIT"] as const).map((v) => (
+                {(["MARKET", "LIMIT", "SL", "SL-M"] as const).map((v) => (
                   <button
                     key={v}
                     onClick={() => setVariety(v)}
@@ -293,16 +313,31 @@ export function OrderPad({
             </div>
 
             {/* Limit Price */}
-            {variety === "LIMIT" && (
+            {(variety === "LIMIT" || variety === "SL") && (
               <div>
                 <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
-                  Limit Price
+                  {variety === "SL" ? "Limit Price After Trigger" : "Limit Price"}
                 </label>
                 <input
                   type="number"
                   step="0.05"
                   value={limitPrice}
                   onChange={(e) => setLimitPrice(parseFloat(e.target.value) || 0)}
+                  className="w-full h-9 rounded border border-border dark:border-border-dark bg-transparent px-3 text-[13px] font-semibold tabular-nums text-primary dark:text-primary-dark outline-none focus:border-accent transition-colors"
+                />
+              </div>
+            )}
+
+            {requiresTrigger && (
+              <div>
+                <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+                  Trigger Price
+                </label>
+                <input
+                  type="number"
+                  step="0.05"
+                  value={triggerPrice}
+                  onChange={(e) => setTriggerPrice(parseFloat(e.target.value) || 0)}
                   className="w-full h-9 rounded border border-border dark:border-border-dark bg-transparent px-3 text-[13px] font-semibold tabular-nums text-primary dark:text-primary-dark outline-none focus:border-accent transition-colors"
                 />
               </div>
@@ -346,15 +381,27 @@ export function OrderPad({
                 </span>
               </div>
               <div className="flex justify-between text-[12px]">
-                <span className="text-muted dark:text-muted-dark">{isBuy ? "Debit" : "Credit"}</span>
+                <span className="text-muted dark:text-muted-dark">{isBuy ? "Upfront" : "Credit"}</span>
                 <span className="text-primary dark:text-primary-dark font-semibold tabular-nums">
-                  {formatCurrency(charges.netAmount)}
+                  {formatCurrency(isBuy ? upfrontDebit : charges.netAmount)}
                 </span>
               </div>
+              {requiresTrigger && (
+                <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+                  <span>Trigger</span>
+                  <span className="text-primary dark:text-primary-dark font-medium tabular-nums">{formatCurrency(triggerPrice)}</span>
+                </div>
+              )}
+              {margin.leverage > 1 && (
+                <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+                  <span>Margin leverage</span>
+                  <span className="text-accent font-medium tabular-nums">{margin.leverage.toFixed(2)}x</span>
+                </div>
+              )}
               {isBuy && (
                 <div className="flex justify-between text-[11px] pt-1.5 border-t border-border dark:border-border-dark">
                   <span className="text-muted dark:text-muted-dark">Available</span>
-                  <span className={cn("font-medium tabular-nums", balance >= charges.netAmount ? "text-profit" : "text-loss")}>
+                  <span className={cn("font-medium tabular-nums", balance >= upfrontDebit ? "text-profit" : "text-loss")}>
                     {formatCurrency(balance)}
                   </span>
                 </div>

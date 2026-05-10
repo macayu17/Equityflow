@@ -9,10 +9,12 @@ import { useAlerts } from "@/hooks/useAlerts";
 import { useLayoutMode } from "@/hooks/useLayoutMode";
 import { useStockSearch } from "@/hooks/useStockData";
 import { addChartToSavedLayout, applyChartLayoutPreset, CHART_LAYOUT_PRESETS } from "@/lib/chart-layouts";
+import { ALERT_METRIC_LABELS, describeAlertRule } from "@/lib/alerts";
+import { parseTerminalCommand } from "@/lib/command-parser";
 import { MOCK_STOCKS } from "@/lib/constants";
 import { addTickerToWatchlist } from "@/lib/watchlists";
 import { cn, formatCurrency } from "@/lib/utils";
-import type { OrderType } from "@/lib/types";
+import type { OrderType, OrderVariety } from "@/lib/types";
 
 interface CommandPaletteProps {
   open: boolean;
@@ -41,7 +43,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const { setMode } = useLayoutMode();
   const { toast } = useToast();
-  const { addAlert } = useAlerts();
+  const { addAlert, addAdvancedAlert } = useAlerts();
   const [query, setQuery] = useState("");
   const { data: results } = useStockSearch(query);
 
@@ -71,10 +73,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     close();
   };
 
-  const openOrderTicket = (ticker: string, type: OrderType, quantity = 1) => {
+  const openOrderTicket = (ticker: string, type: OrderType, quantity = 1, options?: { variety?: OrderVariety; price?: number; triggerPrice?: number }) => {
     setMode("tabs");
     router.push("/");
-    const detail = { ticker, type, quantity };
+    const detail = { ticker, type, quantity, ...options };
     window.dispatchEvent(new CustomEvent("equityflow-open-order", { detail }));
     window.setTimeout(() => window.dispatchEvent(new CustomEvent("equityflow-open-order", { detail })), 150);
     close();
@@ -113,12 +115,97 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     const raw = query.trim();
     const parts = raw.split(/\s+/).filter(Boolean);
     const command = parts[0]?.toLowerCase();
+    const parsed = parseTerminalCommand(raw);
     const ticker = parts[1]?.toUpperCase();
     const stock = ticker ? findStock(ticker) : null;
     const quantity = Math.max(1, Number(parts[2]) || 1);
     const price = Number(parts[3] ?? parts[2]);
     const parsedCondition = parts[2]?.toLowerCase() === "below" ? "below" : "above";
     const items: PaletteAction[] = [];
+
+    if (parsed.kind === "order" && parsed.ticker) {
+      const parsedStock = findStock(parsed.ticker);
+      items.push({
+        id: `parsed-order-${parsed.side}-${parsed.ticker}`,
+        label: `${parsed.side} ${parsed.quantity} ${parsed.ticker} ${parsed.variety}`,
+        meta: parsedStock?.name ?? "Open paper order ticket",
+        icon: parsed.side === "BUY" ? ShoppingCart : TrendingDown,
+        ticker: parsed.ticker,
+        run: () => openOrderTicket(parsed.ticker, parsed.side, parsed.quantity, {
+          variety: parsed.variety,
+          price: parsed.price,
+          triggerPrice: parsed.triggerPrice,
+        }),
+      });
+    }
+
+    if (parsed.kind === "alert") {
+      const parsedStock = findStock(parsed.ticker);
+      const rule = { metric: parsed.metric, operator: parsed.operator, value: parsed.value };
+      items.push({
+        id: `parsed-alert-${parsed.ticker}-${parsed.metric}`,
+        label: `Alert ${parsed.ticker} ${describeAlertRule(rule)}`,
+        meta: `${ALERT_METRIC_LABELS[parsed.metric]} alert${parsedStock ? ` · ${parsedStock.name}` : ""}`,
+        icon: Bell,
+        ticker: parsed.ticker,
+        run: () => {
+          addAdvancedAlert(parsed.ticker, rule);
+          toast({ title: "Alert Armed", description: `${parsed.ticker} ${describeAlertRule(rule)}.`, variant: "success" });
+          close();
+        },
+      });
+    }
+
+    if (parsed.kind === "chart") {
+      items.push({
+        id: `parsed-chart-${parsed.ticker}`,
+        label: `Open ${parsed.ticker} in chart matrix`,
+        meta: "Add chart to tabs mode",
+        icon: CandlestickChart,
+        ticker: parsed.ticker,
+        run: () => openChart(parsed.ticker),
+      });
+    }
+
+    if (parsed.kind === "watch") {
+      items.push({
+        id: `parsed-watch-${parsed.ticker}`,
+        label: `Add ${parsed.ticker} to watchlist`,
+        meta: "Command center watchlist",
+        icon: Eye,
+        ticker: parsed.ticker,
+        run: () => addWatch(parsed.ticker),
+      });
+    }
+
+    if (parsed.kind === "goto") {
+      items.push({
+        id: `parsed-goto-${parsed.path}`,
+        label: `Go to ${parsed.path === "/" ? "home" : parsed.path.slice(1)}`,
+        meta: "Navigate workspace",
+        icon: PanelsTopLeft,
+        run: () => {
+          router.push(parsed.path);
+          close();
+        },
+      });
+    }
+
+    if (parsed.kind === "layout") {
+      const presets = CHART_LAYOUT_PRESETS.filter((preset) => (
+        preset.id.startsWith(parsed.preset)
+        || preset.label.toLowerCase().includes(parsed.preset)
+      ));
+      for (const preset of presets.length ? presets : CHART_LAYOUT_PRESETS) {
+        items.push({
+          id: `parsed-layout-${preset.id}`,
+          label: `Load ${preset.label}`,
+          meta: preset.description,
+          icon: PanelsTopLeft,
+          run: () => applyLayout(preset.id),
+        });
+      }
+    }
 
     if (stock && command === "chart") {
       items.push({

@@ -26,7 +26,7 @@ function isFnoPosition(position: Position): boolean {
 }
 
 export default function PortfolioPage() {
-  const { resetAccount, positions, updateLTP, summary, balance, orders } = usePortfolio();
+  const { resetAccount, positions, updateLTP, summary, balance, risk, orders } = usePortfolio();
   const { prices, commodities } = useAllStreamPrices();
   const { toast } = useToast();
 
@@ -37,7 +37,7 @@ export default function PortfolioPage() {
     () => positions.filter((position) => isFnoPosition(position)),
     [positions]
   );
-  const pendingOrders = useMemo(() => orders.filter((order) => order.status === "PENDING").length, [orders]);
+  const pendingOrders = useMemo(() => orders.filter((order) => order.status === "PENDING" || order.status === "PARTIAL").length, [orders]);
   const netWorth = balance + summary.currentValue;
   const exposure = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
   const pageActions = [
@@ -153,6 +153,9 @@ export default function PortfolioPage() {
             </span>
             <span className="terminal-subtle font-mono text-[10px] uppercase tracking-[0.1em]">
               {positions.length} holdings · {pendingOrders} open orders · {exposure.toFixed(2)}% deployed
+            </span>
+            <span className={cn("rounded-sm border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]", risk.riskScore > 65 ? "border-loss/30 text-loss" : risk.riskScore > 35 ? "border-warning/30 text-warning" : "border-info/30 text-info")}>
+              Risk {risk.riskScore}/100 · Margin {formatCurrency(risk.marginUsed)}
             </span>
           </div>
         </div>

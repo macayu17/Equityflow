@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect, useSyncExternalStore } from "react";
 import { getPortfolioManager, type VirtualPortfolioManager } from "@/lib/engine";
-import type { OrderRequest, Position, Transaction, PortfolioSummary, StrategyPerformance, Order, PortfolioAnalytics } from "@/lib/types";
+import type { OrderRequest, Position, Transaction, PortfolioSummary, StrategyPerformance, Order, PortfolioAnalytics, PortfolioRiskSummary } from "@/lib/types";
 import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import type { MarketSegment } from "@/lib/market-hours";
 import { apiGetJson } from "@/services/request-cache";
@@ -184,6 +184,22 @@ export function usePortfolio() {
         positions: [],
         realizedPnl: 0,
         netPnl: 0,
+        marginUsed: 0,
+        marginAvailable: API_CONFIG.defaultBalance,
+        grossExposure: 0,
+        leverage: 0,
+        riskScore: 0,
+      };
+  const risk: PortfolioRiskSummary = hydrated
+    ? manager.getRiskSummary()
+    : {
+        grossExposure: 0,
+        marginUsed: 0,
+        marginAvailable: API_CONFIG.defaultBalance,
+        leverage: 0,
+        riskScore: 0,
+        concentration: [],
+        warnings: [],
       };
   const strategies: StrategyPerformance[] = hydrated ? manager.getStrategyPerformance() : [];
   const analytics: PortfolioAnalytics = hydrated
@@ -208,6 +224,7 @@ export function usePortfolio() {
     transactions,
     orders,
     summary,
+    risk,
     analytics,
     strategies,
     placeOrder,

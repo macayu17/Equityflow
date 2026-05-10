@@ -3,7 +3,7 @@ import {
   getStockQuote, getMarketIndices, getSparklineData, getCandleData,
   getMarketDepth, getTrendingStocks, searchStocks, getFnoQuote, getCommodityQuote,
   getFullQuote, getOptionChain, getOrderList, getHoldings, getPositions, getApiStatus,
-  getStockDetails,
+  getStockDetails, getApiDiagnostics,
 } from "@/services/api";
 import { API_CONFIG } from "@/lib/constants";
 import { getMarketStatus } from "@/lib/market-hours";
@@ -160,6 +160,15 @@ export function useApiStatus() {
   return useQuery({
     queryKey: ["api-status"],
     queryFn: getApiStatus,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+}
+
+export function useApiDiagnostics() {
+  return useQuery({
+    queryKey: ["api-diagnostics"],
+    queryFn: getApiDiagnostics,
     refetchInterval: 15_000,
     staleTime: 10_000,
   });

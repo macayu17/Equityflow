@@ -51,7 +51,7 @@ function inferFnoLotSize(position: Position): number {
 }
 
 export function PortfolioSummaryCard() {
-  const { summary, balance } = usePortfolio();
+  const { summary, balance, risk } = usePortfolio();
   const netWorth = balance + summary.currentValue;
   const deployedPercent = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
   const cashPercent = Math.max(0, 100 - deployedPercent);
@@ -61,7 +61,9 @@ export function PortfolioSummaryCard() {
     { label: "Invested", value: summary.totalInvested, color: "terminal-fg" },
     { label: "Current Value", value: summary.currentValue, color: "terminal-fg" },
     { label: "Net P&L", value: summary.netPnl, pct: netPnlPercent, dynamic: true },
+    { label: "Margin Used", value: risk.marginUsed, color: "text-info" },
     { label: "Day Returns", value: summary.dayPnl, pct: summary.dayPnlPercent, dynamic: true },
+    { label: "Risk Score", value: risk.riskScore, suffix: "/100", color: risk.riskScore > 65 ? "text-loss" : risk.riskScore > 35 ? "text-warning" : "text-info" },
   ];
 
   return (
@@ -98,7 +100,7 @@ export function PortfolioSummaryCard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {cards.map((card) => (
           <div
             key={card.label}
@@ -109,7 +111,7 @@ export function PortfolioSummaryCard() {
             </div>
             <div className={cn("terminal-number text-base font-bold", card.dynamic ? getPriceChangeColor(card.value) : card.color)}>
               {card.dynamic && card.value > 0 && "+"}
-              {formatCurrency(card.value)}
+              {card.label === "Risk Score" ? `${card.value}${card.suffix ?? ""}` : formatCurrency(card.value)}
             </div>
             {card.dynamic && card.pct !== undefined && (
               <div className={cn("mt-1 flex items-center gap-0.5 text-xs font-medium", getPriceChangeColor(card.value))}>

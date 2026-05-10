@@ -8,11 +8,12 @@ import type { OrderStatus, OrderType } from "@/lib/types";
 import { ArrowUpRight, ArrowDownRight, Clock3, CheckCircle2, XCircle, CandlestickChart, Search } from "lucide-react";
 import { useToast } from "@/components/toast-provider";
 
-const STATUS_TABS: Array<OrderStatus | "ALL"> = ["ALL", "PENDING", "COMPLETED", "REJECTED", "CANCELLED"];
+const STATUS_TABS: Array<OrderStatus | "ALL"> = ["ALL", "PENDING", "PARTIAL", "COMPLETED", "REJECTED", "CANCELLED"];
 
 function statusBadge(status: OrderStatus) {
   if (status === "COMPLETED") return "bg-profit/10 text-profit";
   if (status === "PENDING") return "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400";
+  if (status === "PARTIAL") return "bg-info/10 text-info";
   if (status === "REJECTED") return "bg-loss/10 text-loss";
   return "bg-muted/20 text-muted dark:text-muted-dark";
 }
@@ -20,6 +21,7 @@ function statusBadge(status: OrderStatus) {
 function statusIcon(status: OrderStatus) {
   if (status === "COMPLETED") return <CheckCircle2 size={12} />;
   if (status === "PENDING") return <Clock3 size={12} />;
+  if (status === "PARTIAL") return <Clock3 size={12} />;
   return <XCircle size={12} />;
 }
 
@@ -177,7 +179,14 @@ export function OrdersHistory() {
                   className="w-20 ml-auto px-2 py-1 rounded-md border border-border dark:border-border-dark bg-card dark:bg-card-dark text-xs text-right"
                 />
               ) : (
-                o.quantity.toLocaleString("en-IN")
+                <div>
+                  <div>{o.quantity.toLocaleString("en-IN")}</div>
+                  {o.status === "PARTIAL" && (
+                    <div className="text-[10px] text-info">
+                      filled {(o.filled_quantity ?? 0).toLocaleString("en-IN")} · rem {(o.remaining_quantity ?? 0).toLocaleString("en-IN")}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             <div className="col-span-2 text-right text-xs text-primary dark:text-primary-dark">
@@ -195,6 +204,9 @@ export function OrdersHistory() {
                   <div>{formatCurrency(o.price)}</div>
                   {(o.charges ?? 0) > 0 && (
                     <div className="text-[10px] text-muted dark:text-muted-dark">chg {formatCurrency(o.charges ?? 0)}</div>
+                  )}
+                  {(o.margin_required ?? 0) > 0 && (
+                    <div className="text-[10px] text-muted dark:text-muted-dark">mgn {formatCurrency(o.margin_required ?? 0)}</div>
                   )}
                 </>
               )}
@@ -219,7 +231,7 @@ export function OrdersHistory() {
             </div>
 
             <div className="col-span-1 flex justify-end gap-1">
-              {o.status === "PENDING" && (
+              {(o.status === "PENDING" || o.status === "PARTIAL") && (
                 <>
                   {isEditing ? (
                     <>

@@ -2,15 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, TrendingUp, Briefcase, CandlestickChart, BarChart3 } from "lucide-react";
+import { LayoutDashboard, TrendingUp, Briefcase, CandlestickChart, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const MOBILE_NAV = [
   { href: "/", label: "Explore", icon: LayoutDashboard },
   { href: "/stocks", label: "Stocks", icon: TrendingUp },
   { href: "/fno", label: "F&O", icon: CandlestickChart },
-  { href: "/commodities", label: "Commodities", icon: BarChart3 },
   { href: "/portfolio", label: "Portfolio", icon: Briefcase },
+  { href: "/diagnostics", label: "API", icon: Activity },
 ];
 
 export function MobileNav() {

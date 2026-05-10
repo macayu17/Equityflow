@@ -40,6 +40,7 @@ const NAV_SECTIONS = [
       { href: "/portfolio", label: "Portfolio", code: "PF", icon: Briefcase },
       { href: "/watchlist", label: "Watchlist", code: "WL", icon: Eye },
       { href: "/strategies", label: "Strategies", code: "SIG", icon: BarChart3 },
+      { href: "/diagnostics", label: "Diagnostics", code: "API", icon: Activity },
       { href: "/transactions", label: "History", code: "HIST", icon: History },
     ],
   },
@@ -54,7 +55,7 @@ export function Sidebar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const equity = balance + summary.currentValue;
   const exposurePercent = equity > 0 ? (summary.currentValue / equity) * 100 : 0;
-  const pendingOrders = orders.filter((order) => order.status === "PENDING").length;
+  const pendingOrders = orders.filter((order) => order.status === "PENDING" || order.status === "PARTIAL").length;
   const activePositions = positions.length;
 
   useEffect(() => {
