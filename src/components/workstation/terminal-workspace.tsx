@@ -65,6 +65,56 @@ function StreamHealth() {
   );
 }
 
+function DeskHeader() {
+  const { balance, summary, risk, orders } = usePortfolio();
+  const openOrders = orders.filter((order) => order.status === "PENDING" || order.status === "PARTIAL").length;
+  const cells = [
+    { label: "Cash", value: formatCurrency(balance), tone: "text-[var(--terminal-accent)]" },
+    { label: "Exposure", value: formatCurrency(summary.currentValue), tone: "terminal-fg" },
+    {
+      label: "P&L",
+      value: `${summary.totalPnl >= 0 ? "+" : ""}${formatCurrency(summary.totalPnl)}`,
+      tone: summary.totalPnl >= 0 ? "text-profit" : "text-loss",
+    },
+    {
+      label: "Risk",
+      value: `${risk.riskScore}/100`,
+      tone: risk.riskScore > 65 ? "text-loss" : risk.riskScore > 35 ? "text-warning" : "text-info",
+    },
+    { label: "Open", value: openOrders, tone: openOrders > 0 ? "text-warning" : "terminal-fg" },
+  ];
+
+  return (
+    <div className="terminal-tape mb-3 overflow-hidden rounded-sm">
+      <div className="grid gap-px bg-[var(--terminal-grid)] md:grid-cols-[minmax(240px,1fr)_auto]">
+        <div className="bg-[var(--terminal-surface)] px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <ModeBadge />
+            <StreamHealth />
+            <span className="terminal-badge rounded-sm px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em]">
+              NSE Paper Desk
+            </span>
+          </div>
+          <div className="terminal-subtle mt-1.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em]">
+            <Radio size={12} />
+            <span>Terminal workspace</span>
+            <History size={12} />
+            <span>IST session</span>
+          </div>
+        </div>
+        <div className="grid min-w-full grid-cols-5 bg-[var(--terminal-grid)] md:min-w-[520px]">
+          {cells.map((cell) => (
+            <div key={cell.label} className="bg-[var(--terminal-surface)] px-3 py-2">
+              <div className="terminal-subtle font-mono text-[9px] uppercase tracking-[0.12em]">{cell.label}</div>
+              <div className={cn("terminal-number mt-1 text-[12px] font-bold", cell.tone)}>{cell.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function QuoteRow({ ticker, onTrade }: { ticker: string; onTrade?: (draft: OrderDraft) => void }) {
   const fallback = stockMeta(ticker);
   const stream = useStreamPrice(ticker);
@@ -112,7 +162,7 @@ function QuoteBoard({ title, symbols, onTrade }: { title: string; symbols: strin
         <span className="text-right">Move</span>
         <span className="text-right">Act</span>
       </div>
-      <div className="max-h-[430px] overflow-y-auto">
+      <div className="max-h-[420px] overflow-y-auto">
         {symbols.map((ticker) => (
           <QuoteRow key={ticker} ticker={ticker} onTrade={onTrade} />
         ))}
@@ -250,9 +300,36 @@ function ActionRail({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
             Sell REL
           </button>
         </div>
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            className="terminal-action h-7 px-1 text-[9px]"
+            disabled={ltp <= 0}
+            onClick={() => onTrade({ ticker: "RELIANCE", name: fallback?.name ?? "RELIANCE", ltp, type: "BUY", defaultVariety: "LIMIT", defaultLimitPrice: ltp })}
+          >
+            Limit
+          </button>
+          <button
+            className="terminal-action h-7 px-1 text-[9px]"
+            disabled={ltp <= 0}
+            onClick={() => onTrade({ ticker: "RELIANCE", name: fallback?.name ?? "RELIANCE", ltp, type: "SELL", defaultVariety: "SL-M", defaultTriggerPrice: ltp * 0.98 })}
+          >
+            SL-M
+          </button>
+          <button
+            className="terminal-action h-7 px-1 text-[9px]"
+            disabled={ltp <= 0}
+            onClick={() => onTrade({ ticker: "RELIANCE", name: fallback?.name ?? "RELIANCE", ltp, type: "BUY", defaultQuantity: 10 })}
+          >
+            10 Qty
+          </button>
+        </div>
         <div className="terminal-fill rounded-sm border border-[color:var(--terminal-grid)] p-3">
           <div className="terminal-subtle text-[10px] uppercase tracking-[0.12em]">Reference</div>
           <div className="terminal-number mt-1 text-2xl font-bold text-[var(--terminal-accent)]">{ltp > 0 ? formatCurrency(ltp) : "-"}</div>
+          <div className="terminal-subtle mt-2 grid grid-cols-2 gap-2 font-mono text-[9px] uppercase tracking-[0.1em]">
+            <span className="terminal-data-cell rounded-sm px-2 py-1">Market</span>
+            <span className="terminal-data-cell rounded-sm px-2 py-1">SL/LMT</span>
+          </div>
         </div>
       </div>
     </section>
@@ -707,18 +784,7 @@ export function TerminalWorkspace() {
 
   return (
     <div className="terminal-shell min-h-full px-3 py-3 md:px-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <ModeBadge />
-          <StreamHealth />
-        </div>
-        <div className="terminal-subtle flex items-center gap-2 text-[10px] uppercase tracking-[0.12em]">
-          <Radio size={13} />
-          <span>EquityFlow Workstation</span>
-          <History size={13} />
-          <span>IST</span>
-        </div>
-      </div>
+      <DeskHeader />
 
       {mode === "classic" ? (
         <ClassicBrokerage onTrade={setOrderDraft} />

@@ -1,148 +1,188 @@
-﻿# <div align="center"> <img src="public/logo.png" width="80" alt="EquityFlow Logo"> <br> EquityFlow </div>
+# EquityFlow
 
-<p align="center">
-  <br>
-  <strong>A premium, ultra-modern paper trading platform with a minimalist glass-morphism UI.</strong>
-  <br>
-  <br>
-  <img src="https://img.shields.io/badge/Next.js-14.2-black?style=flat-square&logo=next.js" alt="Next.js" />
-  <img src="https://img.shields.io/badge/React-18-blue?style=flat-square&logo=react" alt="React" />
-  <img src="https://img.shields.io/badge/Tailwind_CSS-3.4-38B2AC?style=flat-square&logo=tailwind-css" alt="Tailwind CSS" />
-  <img src="https://img.shields.io/badge/FastAPI-0.104-009688?style=flat-square&logo=fastapi" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python" alt="Python" />
-</p>
+EquityFlow is a local paper-trading workstation for Indian markets. It combines a Next.js trading desk with a FastAPI market-data proxy so you can watch live or fallback quotes, place simulated orders, track a virtual portfolio, and test simple strategies without touching real money.
 
-## ✨ Overview
+The product direction is a dense terminal-style desk: compact market tables, a broker-like order ticket, streaming quotes, chart workspaces, risk and margin readouts, diagnostics, and fast navigation. It is meant to feel like a practical trading tool, not a landing page or decorative finance dashboard.
 
-EquityFlow is a meticulously designed front-to-back virtual stock trading application. It simulates real-world equity, futures & options (F&O), and commodities markets.
+## What It Does
 
-The primary focus of this project is its **industry-tier user interface**. Heavily inspired by Apple Vision Pro and modern fintech platforms (like Linear, Robinhood, and Stripe), EquityFlow features a custom-built "frosted glass" aesthetic, fluid animations, and a strict minimalist design system utilizing the **Plus Jakarta Sans** typeface.
+- Streams Indian equity, F&O, index, and commodity prices through the backend.
+- Prefers Upstox for market data and falls back to Groww where supported.
+- Simulates paper orders in the browser with local portfolio state.
+- Supports MARKET, LIMIT, SL, and SL-M orders.
+- Tracks queued orders, partial fills, cancel and modify flows, positions, holdings, charges, margin, and risk.
+- Provides a terminal workspace with quote boards, charts, account rail, order ticket, replay lab, alerts, and layout modes.
+- Includes strategy tooling for options payoff checks and strategy-tagged portfolio analytics.
+- Exposes provider diagnostics for auth state, cache pressure, cooldowns, and stream health.
 
-## 🚀 Features
+## Stack
 
-- **Premium Glass-Morphism UI:** Hand-crafted CSS utilities mimicking real frosted glass with strict Apple-inspired depth mapping, subtle glows, and flawless dark/light mode transitions.
-- **Real-Time Data Streams:** Custom hooks (`useStreamPrices`, `useAllStreamPrices`) seamlessly update asset prices and flash order book changes in real-time.
-- **Comprehensive Portfolio Tracking:** Distinct panels for long-term holdings, intraday positions, and F&O contracts. Tabular numeric data streams seamlessly.
-- **Interactive Charting:** Built-in integration with TradingView's `lightweight-charts` for smooth, performant candlestick data.
-- **Modern Tech Stack:**
-  - Frontend powered completely by Next.js App Router and React Server/Client Components.
-  - Sub-millisecond styled with Tailwind CSS, `clsx`, and `tailwind-merge`.
-  - Python FastAPI backend acting as a mock exchange/data provider.
+Frontend:
 
-## 💻 Tech Stack
+- Next.js App Router
+- React
+- TypeScript
+- Tailwind CSS
+- Radix UI primitives
+- Lucide icons
+- Lightweight Charts
+- Vitest
 
-### Frontend
+Backend:
 
-- **Framework:** Next.js 14.2
-- **Library:** React 18
-- **Styling:** Tailwind CSS (Custom Indigo/Glass Theme)
-- **Typography:** Plus Jakarta Sans & Inter
-- **Icons:** Lucide React
-- **UI Primitives:** Radix UI
-- **Animations:** Framer Motion
-- **Charting:** Lightweight Charts
+- FastAPI
+- Uvicorn
+- httpx
+- Upstox market-data integration
+- Groww fallback integration
+- Server-sent events for price streams
 
-### Backend
+## Project Layout
 
-- **Framework:** FastAPI
-- **Server:** Uvicorn
-- **Language:** Python 3.11+
+```text
+backend/
+  main.py                 FastAPI app, provider clients, routes, SSE streams
+  .env.example            Backend configuration template
 
-## 🛠️ Getting Started
+src/app/
+  page.tsx                Main terminal workstation
+  stocks/                 Equity list and detail pages
+  fno/                    F&O option-chain and futures view
+  commodities/            Commodity views
+  portfolio/              Portfolio, holdings, positions, orders
+  strategies/             Strategy builder
+  diagnostics/            Provider and stream diagnostics
+  transactions/           Transaction history
 
-### 1. Requirements
+src/components/
+  workstation/            Terminal workspace and replay lab
+  trading/                Order ticket
+  market/                 Charts, quotes, market depth, stock cards
+  portfolio/              Holdings, positions, analytics, order history
+  layout/                 Sidebar, top bar, command palette, provider status
 
-- Node.js (v18+)
-- Python (3.11+)
+src/lib/
+  engine.ts               Local paper-trading engine
+  risk-engine.ts          Margin, exposure, strategy payoff, risk score
+  command-parser.ts       Terminal command parsing
+  replay.ts               Deterministic replay helpers
+  market-hours.ts         NSE/MCX session helpers
+```
 
-### 2. Clone and Install
+## Requirements
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/equityflow.git
-cd equityflow
+- Node.js 18 or newer
+- Python 3.11 or newer
+- npm
 
-# Install frontend dependencies
+## Setup
+
+Install frontend dependencies from the repo root:
+
+```powershell
 npm install
 ```
 
-### 3. Setup Backend
+Install backend dependencies:
 
-```bash
-# Navigate to backend directory
-cd backend
-
-# Create virtual environment
-python -m venv venv
-
-# Activate venv (Windows)
-.\venv\Scripts\activate
-# Activate venv (Mac/Linux)
-# source venv/bin/activate
-
-# Install requirements
-pip install -r requirements.txt
+```powershell
+python -m venv backend\venv
+backend\venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
 ```
 
-Create `backend/.env` from `backend/.env.example`. Market data now prefers Upstox and falls back to Groww:
+Create `backend/.env` from `backend/.env.example`.
+
+Minimal local configuration:
 
 ```env
 MARKET_DATA_PROVIDER=upstox
-
-# Either paste a direct token, or configure OAuth and connect from the top-bar provider panel.
 UPSTOX_ACCESS_TOKEN=
 UPSTOX_API_KEY=
 UPSTOX_API_SECRET=
 UPSTOX_REDIRECT_URI=http://localhost:3000
-
-# Optional Groww fallback
 GROWW_API_KEY=
 GROWW_API_SECRET=
 GROWW_ACCESS_TOKEN=
+HOST=127.0.0.1
+PORT=8001
 ```
 
-The frontend provider panel can open the Upstox OAuth login URL and exchange the returned `code` for a local runtime token stored at `backend/.upstox-token.json` by default. That file is ignored by git.
+You can either paste an Upstox access token directly or configure the OAuth fields and use the provider panel in the app. Runtime OAuth tokens are stored locally in `backend/.upstox-token.json`; that file is ignored by git.
 
-Useful live checks:
+The frontend reads its backend URL from `.env.local`:
 
-```bash
-curl http://127.0.0.1:8001/api/status
-curl "http://127.0.0.1:8001/api/quote?exchange=NSE&segment=CASH&trading_symbol=RELIANCE"
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8001
 ```
 
-### 4. Run the Application
+## Running Locally
 
-You can use the provided powershell script to boot both simultaneously on Windows:
+Start both services on Windows:
 
 ```powershell
 .\start-all.ps1
 ```
 
-Or run them individually:
+Or run them separately.
 
-**Terminal 1 (Backend):**
+Backend:
 
-```bash
-cd backend
-python main.py
-# Runs on http://127.0.0.1:8001
+```powershell
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
 ```
 
-**Terminal 2 (Frontend):**
+Frontend:
 
-```bash
-npm run dev
-# Runs on http://localhost:3000
+```powershell
+npm run dev -- --port 3000
 ```
 
-## 🎨 Design System
+Open:
 
-EquityFlow departs from standard dashboard templates by utilizing a heavily customized `tailwind.config.ts` and `globals.css`:
+```text
+http://localhost:3000
+```
 
-- **Colors:** Deep Navy (`#0F1117`), Frosted White (`#FAFBFC`), and Indigo Accent (`#6366F1`).
-- **Glass Effects:** Custom classes (`.glass`, `.glass-panel`, `.glass-card`) relying on CSS backdrop-filters (`blur(20px) saturate(180%)`) combined with semi-transparent RGBA borders for the "inset" edge lighting effect.
-- **Type:** Enforced `<span className="tabular-nums">` for all flashing numeric data to prevent layout jitter.
+Useful backend checks:
 
-## 📄 License
+```powershell
+curl http://127.0.0.1:8001/api/status
+curl http://127.0.0.1:8001/api/diagnostics
+curl "http://127.0.0.1:8001/api/quote?exchange=NSE&segment=CASH&trading_symbol=RELIANCE"
+```
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+## Verification
+
+Run these before treating a change as ready:
+
+```powershell
+npm test
+npx tsc --noEmit
+npm run lint
+python -m py_compile backend\main.py
+git diff --check
+npm run build
+```
+
+For UI or runtime changes, also smoke test the live app with the current backend process. At minimum, check:
+
+- `/`
+- `/stocks`
+- `/fno`
+- `/commodities`
+- `/portfolio`
+- `/watchlist`
+- `/strategies`
+- `/diagnostics`
+- `/transactions`
+
+The backend on port `8001` should be restarted after backend changes. A stale process can make the frontend look broken even when the source code is correct.
+
+## Notes for Development
+
+- Paper-trading state is browser-local through `localStorage`.
+- Secrets stay in `.env.local`, `backend/.env`, or the local Upstox token file. Do not commit them.
+- `instruments.csv` is used for instrument and F&O symbol resolution.
+- Terminal UI work should stay compact and information-dense. Avoid marketing sections, oversized cards, and glass-style decorative panels.
+- Pushing to GitHub is a separate step. Only push when explicitly requested.

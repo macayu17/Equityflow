@@ -139,74 +139,76 @@ input[type="number"] {
     background-size: 200% 100%;
   }
 
-  /* ── Glass Morphism ── */
+  /* Legacy surface aliases kept for older route components. */
   .glass {
-    background: rgba(5, 7, 10, 0.88);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(245, 179, 1, 0.16);
+    background: color-mix(in srgb, var(--terminal-surface) 92%, transparent);
+    border: 1px solid var(--terminal-border);
   }
 
   .dark .glass {
-    background: rgba(5, 7, 10, 0.92);
-    border-color: rgba(245, 179, 1, 0.16);
+    background: color-mix(in srgb, var(--terminal-surface) 94%, transparent);
+    border-color: var(--terminal-border);
   }
 
   .glass-card {
-    @apply rounded;
-    background: rgba(255, 255, 255, 0.72);
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    box-shadow: none;
-    transition: all 0.15s ease;
+    border-radius: 4px;
+    background: var(--terminal-surface);
+    border: 1px solid var(--terminal-border);
+    color: var(--terminal-fg);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+    transition: border-color 0.15s ease, background 0.15s ease;
   }
 
   .dark .glass-card {
-    background: rgba(10, 14, 20, 0.88);
-    border-color: rgba(245, 179, 1, 0.14);
-    box-shadow: none;
+    background: var(--terminal-surface);
+    border-color: var(--terminal-border);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
 
   .glass-card:hover {
-    border-color: rgba(0, 0, 0, 0.1);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    border-color: var(--terminal-accent);
+    background: var(--terminal-hover);
   }
 
   .dark .glass-card:hover {
-    border-color: rgba(255, 255, 255, 0.1);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    border-color: var(--terminal-accent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
 
   .glass-panel {
-    @apply bg-card/90 dark:bg-card-dark/90;
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: var(--terminal-surface);
+    border: 1px solid var(--terminal-border);
   }
 
   .dark .glass-panel {
-    border-color: rgba(255, 255, 255, 0.06);
+    border-color: var(--terminal-border);
   }
 
   .glass-sidebar {
-    background: rgba(255, 255, 255, 0.92);
+    background: var(--terminal-shell);
   }
 
   .dark .glass-sidebar {
-    background: rgba(5, 7, 10, 0.98);
+    background: var(--terminal-shell);
   }
 
-  /* ── Premium Card (flat for non-glass contexts) ── */
+  /* Premium Card (legacy alias for route components). */
   .premium-card {
-    @apply rounded-xl border border-border dark:border-border-dark bg-card dark:bg-card-dark;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    transition: all 0.15s ease;
+    border-radius: 4px;
+    border: 1px solid var(--terminal-border);
+    background: var(--terminal-surface);
+    color: var(--terminal-fg);
+    box-shadow: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
   }
 
   .premium-card:hover {
-    @apply border-border-hover dark:border-border-hover-dark;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-color: var(--terminal-accent);
+    background: var(--terminal-hover);
   }
 
   .dark .premium-card:hover {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    box-shadow: none;
   }
 
   /* ── Smooth transitions ── */
@@ -242,23 +244,30 @@ input[type="number"] {
   }
 
   .terminal-shell {
-    background: var(--terminal-shell);
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--terminal-grid) 74%, transparent) 1px, transparent 1px),
+      linear-gradient(0deg, color-mix(in srgb, var(--terminal-grid) 64%, transparent) 1px, transparent 1px),
+      var(--terminal-shell);
+    background-size: 48px 48px, 48px 48px, auto;
     color: var(--terminal-fg);
   }
 
   .terminal-sidebar,
   .terminal-topbar {
-    background: color-mix(in srgb, var(--terminal-shell) 94%, transparent);
+    background: color-mix(in srgb, var(--terminal-shell) 96%, transparent);
     border-color: var(--terminal-border);
     color: var(--terminal-fg);
+    box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--terminal-accent) 10%, transparent);
   }
 
   .terminal-panel {
     border-radius: 4px;
     border: 1px solid var(--terminal-border);
-    background: var(--terminal-surface);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--terminal-surface-raised) 38%, transparent), transparent 68px),
+      var(--terminal-surface);
     color: var(--terminal-fg);
-    box-shadow: none;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
   }
 
   .terminal-panel-header {
@@ -267,7 +276,8 @@ input[type="number"] {
     justify-content: space-between;
     border-bottom: 1px solid var(--terminal-border);
     background: var(--terminal-surface-raised);
-    padding: 0.5rem 0.75rem;
+    min-height: 2.35rem;
+    padding: 0.45rem 0.75rem;
   }
 
   .terminal-title {
@@ -282,7 +292,8 @@ input[type="number"] {
     display: grid;
     align-items: center;
     border-bottom: 1px solid var(--terminal-grid);
-    padding: 0.375rem 0.75rem;
+    min-height: 2rem;
+    padding: 0.35rem 0.75rem;
     font-size: 11px;
     color: var(--terminal-fg);
   }
@@ -361,6 +372,7 @@ input[type="number"] {
     border: 1px solid var(--terminal-border);
     background: var(--terminal-fill);
     color: var(--terminal-fg);
+    border-radius: 3px;
   }
 
   .terminal-input::placeholder {
@@ -369,6 +381,28 @@ input[type="number"] {
 
   .terminal-overlay {
     background: color-mix(in srgb, var(--terminal-surface) 85%, transparent);
+  }
+
+  .terminal-tape {
+    border: 1px solid var(--terminal-border);
+    background: color-mix(in srgb, var(--terminal-surface) 82%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+  }
+
+  .terminal-data-cell {
+    border: 1px solid var(--terminal-grid);
+    background: var(--terminal-fill);
+  }
+
+  .terminal-hotkey {
+    border: 1px solid var(--terminal-border);
+    background: var(--terminal-accent-soft);
+    color: var(--terminal-accent);
+    font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
   }
 
   .theme-wave-overlay {

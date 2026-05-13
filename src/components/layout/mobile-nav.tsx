@@ -28,10 +28,10 @@ export function MobileNav() {
             key={item.href}
             href={item.href}
             className={cn(
-              "flex-1 flex flex-col items-center gap-1 py-2.5 text-2xs font-semibold uppercase tracking-[0.04em] transition-colors",
+              "flex-1 flex flex-col items-center gap-1 border-t-2 py-2.5 text-2xs font-semibold uppercase tracking-[0.04em] transition-colors",
               isActive
-                ? "text-[var(--terminal-accent)]"
-                : "terminal-subtle"
+                ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                : "terminal-subtle border-transparent"
             )}
           >
             <item.icon size={19} strokeWidth={isActive ? 2.2 : 1.7} />

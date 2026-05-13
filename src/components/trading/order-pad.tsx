@@ -150,47 +150,45 @@ export function OrderPad({
         <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-[2px] z-50 animate-fade-in" />
         <Dialog.Content
           className={cn(
-            "fixed z-50 bg-card dark:bg-card-dark outline-none",
+            "fixed z-50 terminal-panel outline-none",
             isMobile
-              ? "bottom-0 left-0 right-0 rounded-t-xl max-h-[85vh] overflow-y-auto animate-slide-up shadow-modal"
-              : "top-0 right-0 h-full w-[400px] border-l border-border dark:border-border-dark animate-slide-right shadow-elevated"
+              ? "bottom-0 left-0 right-0 rounded-t-sm max-h-[85vh] overflow-y-auto animate-slide-up"
+              : "top-0 right-0 h-full w-[400px] border-l border-[color:var(--terminal-border)] animate-slide-right"
             )}
         >
           <Dialog.Title className="sr-only">
             {orderType} order ticket for {ticker}
           </Dialog.Title>
-          {/* Header */}
           <div className={cn(
-            "flex items-center justify-between px-5 py-3.5 border-b border-border dark:border-border-dark",
-            isBuy ? "bg-profit/[0.03]" : "bg-loss/[0.03]"
+            "terminal-panel-header px-4 py-3",
+            isBuy ? "border-b-profit/20" : "border-b-loss/20"
           )}>
             <div className="flex min-w-0 items-center gap-3">
               <StockLogo ticker={ticker} className="h-9 w-9 flex-shrink-0 rounded-sm" textClassName="text-[9px]" />
               <div className="min-w-0">
-              <div className="text-[13px] font-semibold text-primary dark:text-primary-dark">
-                {stockName}
-              </div>
-              <div className="text-[11px] text-muted dark:text-muted-dark">
-                {ticker} · NSE · {formatCurrency(ltp)}
-                {isFnO && <span className="ml-1 text-accent font-medium">· Lot {lotSize}</span>}
-              </div>
+                <div className="terminal-title truncate text-[12px]">
+                  {stockName}
+                </div>
+                <div className="terminal-subtle font-mono text-[10px] uppercase tracking-[0.08em]">
+                  {ticker} · NSE · {formatCurrency(ltp)}
+                  {isFnO && <span className="ml-1 text-accent font-medium">· Lot {lotSize}</span>}
+                </div>
               </div>
             </div>
-            <Dialog.Close className="p-1 rounded-md hover:bg-surface dark:hover:bg-elevated-dark transition-colors">
-              <X size={16} className="text-muted dark:text-muted-dark" />
+            <Dialog.Close className="terminal-action flex h-7 w-7 items-center justify-center px-0">
+              <X size={14} />
             </Dialog.Close>
           </div>
 
-          <div className="px-5 py-4 space-y-4">
-            {/* Buy/Sell Toggle */}
-            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-md bg-surface dark:bg-elevated-dark">
+          <div className="space-y-4 px-4 py-4">
+            <div className="grid grid-cols-2 gap-1.5 rounded-sm border border-[color:var(--terminal-grid)] bg-[var(--terminal-fill)] p-1">
               <button
                 onClick={() => setOrderType("BUY")}
                 className={cn(
-                  "py-2 rounded text-[13px] font-semibold transition-all",
+                  "rounded-sm py-2 font-mono text-[12px] font-bold uppercase tracking-[0.1em] transition-all",
                   isBuy
-                    ? "bg-profit text-white shadow-xs"
-                    : "text-muted dark:text-muted-dark hover:text-primary dark:hover:text-primary-dark"
+                    ? "bg-profit text-white"
+                    : "terminal-subtle hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]"
                 )}
               >
                 BUY
@@ -198,19 +196,18 @@ export function OrderPad({
               <button
                 onClick={() => setOrderType("SELL")}
                 className={cn(
-                  "py-2 rounded text-[13px] font-semibold transition-all",
+                  "rounded-sm py-2 font-mono text-[12px] font-bold uppercase tracking-[0.1em] transition-all",
                   !isBuy
-                    ? "bg-loss text-white shadow-xs"
-                    : "text-muted dark:text-muted-dark hover:text-primary dark:hover:text-primary-dark"
+                    ? "bg-loss text-white"
+                    : "terminal-subtle hover:bg-[var(--terminal-hover)] hover:text-[var(--terminal-accent)]"
                 )}
               >
                 SELL
               </button>
             </div>
 
-            {/* Product */}
             <div>
-              <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+              <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                 Product
               </label>
               <div className="grid grid-cols-2 gap-1.5">
@@ -219,10 +216,10 @@ export function OrderPad({
                     key={p}
                     onClick={() => setProduct(p)}
                     className={cn(
-                      "py-1.5 rounded text-[12px] font-medium border transition-all",
+                      "rounded-sm border py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] transition-all",
                       product === p
-                        ? "border-accent bg-accent-muted dark:bg-accent-muted-dark text-accent"
-                        : "border-border dark:border-border-dark text-muted dark:text-muted-dark hover:border-accent/30"
+                        ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                        : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)] hover:border-[color:var(--terminal-accent)]"
                     )}
                   >
                     {p}
@@ -231,9 +228,8 @@ export function OrderPad({
               </div>
             </div>
 
-            {/* Order Type */}
             <div>
-              <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+              <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                 Order Type
               </label>
               <div className="grid grid-cols-2 gap-1.5">
@@ -242,10 +238,10 @@ export function OrderPad({
                     key={v}
                     onClick={() => setVariety(v)}
                     className={cn(
-                      "py-1.5 rounded text-[12px] font-medium border transition-all",
+                      "rounded-sm border py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] transition-all",
                       variety === v
-                        ? "border-accent bg-accent-muted dark:bg-accent-muted-dark text-accent"
-                        : "border-border dark:border-border-dark text-muted dark:text-muted-dark hover:border-accent/30"
+                        ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                        : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)] hover:border-[color:var(--terminal-accent)]"
                     )}
                   >
                     {v}
@@ -254,15 +250,14 @@ export function OrderPad({
               </div>
             </div>
 
-            {/* Quantity */}
             <div>
-              <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+              <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                 {isFnO ? `Lots (× ${lotSize})` : "Quantity"}
               </label>
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => setQuantity(Math.max(0, quantity - 1))}
-                  className="w-9 h-9 rounded border border-border dark:border-border-dark flex items-center justify-center text-base font-medium hover:border-accent transition-colors text-secondary dark:text-secondary-dark"
+                  className="terminal-action flex h-9 w-9 items-center justify-center px-0 text-base"
                 >
                   −
                 </button>
@@ -280,11 +275,11 @@ export function OrderPad({
                     if (Number.isNaN(nextQuantity)) return;
                     setQuantity(Math.max(0, nextQuantity));
                   }}
-                  className="flex-1 h-9 rounded border border-border dark:border-border-dark bg-transparent text-center text-[13px] font-semibold tabular-nums text-primary dark:text-primary-dark outline-none focus:border-accent transition-colors"
+                  className="terminal-input terminal-number h-9 flex-1 px-3 text-center text-[13px] font-semibold outline-none focus:border-[color:var(--terminal-accent)]"
                 />
                 <button
                   onClick={() => setQuantity(quantity + 1)}
-                  className="w-9 h-9 rounded border border-border dark:border-border-dark flex items-center justify-center text-base font-medium hover:border-accent transition-colors text-secondary dark:text-secondary-dark"
+                  className="terminal-action flex h-9 w-9 items-center justify-center px-0 text-base"
                 >
                   +
                 </button>
@@ -295,10 +290,10 @@ export function OrderPad({
                     key={q}
                     onClick={() => setQuantity(q)}
                     className={cn(
-                      "flex-1 py-1 text-[11px] rounded border transition-colors",
+                      "flex-1 rounded-sm border py-1 font-mono text-[10px] font-bold transition-colors",
                       quantity === q
-                        ? "border-accent text-accent bg-accent-muted dark:bg-accent-muted-dark"
-                        : "border-border dark:border-border-dark text-muted dark:text-muted-dark"
+                        ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                        : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)]"
                     )}
                   >
                     {isFnO ? `${q}L` : q}
@@ -306,16 +301,15 @@ export function OrderPad({
                 ))}
               </div>
               {isFnO && (
-                <div className="text-2xs text-muted dark:text-muted-dark mt-1">
+                <div className="terminal-subtle mt-1 text-2xs">
                   {quantity} lot{quantity > 1 ? "s" : ""} = {totalQuantity.toLocaleString("en-IN")} shares
                 </div>
               )}
             </div>
 
-            {/* Limit Price */}
             {(variety === "LIMIT" || variety === "SL") && (
               <div>
-                <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+                <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                   {variety === "SL" ? "Limit Price After Trigger" : "Limit Price"}
                 </label>
                 <input
@@ -323,14 +317,14 @@ export function OrderPad({
                   step="0.05"
                   value={limitPrice}
                   onChange={(e) => setLimitPrice(parseFloat(e.target.value) || 0)}
-                  className="w-full h-9 rounded border border-border dark:border-border-dark bg-transparent px-3 text-[13px] font-semibold tabular-nums text-primary dark:text-primary-dark outline-none focus:border-accent transition-colors"
+                  className="terminal-input terminal-number h-9 w-full px-3 text-[13px] font-semibold outline-none focus:border-[color:var(--terminal-accent)]"
                 />
               </div>
             )}
 
             {requiresTrigger && (
               <div>
-                <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+                <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                   Trigger Price
                 </label>
                 <input
@@ -338,14 +332,13 @@ export function OrderPad({
                   step="0.05"
                   value={triggerPrice}
                   onChange={(e) => setTriggerPrice(parseFloat(e.target.value) || 0)}
-                  className="w-full h-9 rounded border border-border dark:border-border-dark bg-transparent px-3 text-[13px] font-semibold tabular-nums text-primary dark:text-primary-dark outline-none focus:border-accent transition-colors"
+                  className="terminal-input terminal-number h-9 w-full px-3 text-[13px] font-semibold outline-none focus:border-[color:var(--terminal-accent)]"
                 />
               </div>
             )}
 
-            {/* Strategy Tag */}
             <div>
-              <label className="text-[11px] font-medium text-muted dark:text-muted-dark uppercase tracking-wider mb-1.5 block">
+              <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                 Strategy
               </label>
               <div className="grid grid-cols-3 gap-1.5">
@@ -354,10 +347,10 @@ export function OrderPad({
                     key={tag}
                     onClick={() => setStrategyTag(tag)}
                     className={cn(
-                      "py-1 rounded text-[11px] font-medium border transition-all",
+                      "rounded-sm border py-1 font-mono text-[10px] font-bold transition-all",
                       strategyTag === tag
-                        ? "border-accent bg-accent-muted dark:bg-accent-muted-dark text-accent"
-                        : "border-border dark:border-border-dark text-muted dark:text-muted-dark hover:border-accent/30"
+                        ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                        : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)] hover:border-[color:var(--terminal-accent)]"
                     )}
                   >
                     {tag}
@@ -366,54 +359,52 @@ export function OrderPad({
               </div>
             </div>
 
-            {/* Summary */}
-            <div className="rounded-md bg-surface dark:bg-elevated-dark p-3 space-y-1.5">
-              <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+            <div className="terminal-data-cell space-y-1.5 rounded-sm p-3">
+              <div className="terminal-subtle flex justify-between text-[11px]">
                 <span>{isFnO ? `Price × ${quantity} lot${quantity > 1 ? "s" : ""} × ${lotSize}` : "Price × Qty"}</span>
-                <span className="text-primary dark:text-primary-dark font-medium tabular-nums">
+                <span className="terminal-number font-medium text-[var(--terminal-fg)]">
                   {formatCurrency(effectivePrice)} × {totalQuantity.toLocaleString("en-IN")}
                 </span>
               </div>
-              <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+              <div className="terminal-subtle flex justify-between text-[11px]">
                 <span>Est. charges</span>
-                <span className="text-primary dark:text-primary-dark font-medium tabular-nums">
+                <span className="terminal-number font-medium text-[var(--terminal-fg)]">
                   {formatCurrency(charges.total)}
                 </span>
               </div>
               <div className="flex justify-between text-[12px]">
-                <span className="text-muted dark:text-muted-dark">{isBuy ? "Upfront" : "Credit"}</span>
-                <span className="text-primary dark:text-primary-dark font-semibold tabular-nums">
+                <span className="terminal-subtle">{isBuy ? "Upfront" : "Credit"}</span>
+                <span className="terminal-number font-semibold text-[var(--terminal-fg)]">
                   {formatCurrency(isBuy ? upfrontDebit : charges.netAmount)}
                 </span>
               </div>
               {requiresTrigger && (
-                <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+                <div className="terminal-subtle flex justify-between text-[11px]">
                   <span>Trigger</span>
-                  <span className="text-primary dark:text-primary-dark font-medium tabular-nums">{formatCurrency(triggerPrice)}</span>
+                  <span className="terminal-number font-medium text-[var(--terminal-fg)]">{formatCurrency(triggerPrice)}</span>
                 </div>
               )}
               {margin.leverage > 1 && (
-                <div className="flex justify-between text-[11px] text-muted dark:text-muted-dark">
+                <div className="terminal-subtle flex justify-between text-[11px]">
                   <span>Margin leverage</span>
-                  <span className="text-accent font-medium tabular-nums">{margin.leverage.toFixed(2)}x</span>
+                  <span className="terminal-number font-medium text-[var(--terminal-accent)]">{margin.leverage.toFixed(2)}x</span>
                 </div>
               )}
               {isBuy && (
-                <div className="flex justify-between text-[11px] pt-1.5 border-t border-border dark:border-border-dark">
-                  <span className="text-muted dark:text-muted-dark">Available</span>
-                  <span className={cn("font-medium tabular-nums", balance >= upfrontDebit ? "text-profit" : "text-loss")}>
+                <div className="flex justify-between border-t border-[color:var(--terminal-grid)] pt-1.5 text-[11px]">
+                  <span className="terminal-subtle">Available</span>
+                  <span className={cn("terminal-number font-medium", balance >= upfrontDebit ? "text-profit" : "text-loss")}>
                     {formatCurrency(balance)}
                   </span>
                 </div>
               )}
             </div>
 
-            {/* Submit */}
             <button
               onClick={handleSubmit}
               disabled={!hasValidOrder}
               className={cn(
-                "w-full py-2.5 rounded-md text-[13px] font-semibold text-white transition-all active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45",
+                "w-full rounded-sm py-2.5 font-mono text-[13px] font-bold uppercase tracking-[0.12em] text-white transition-all active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45",
                 isBuy
                   ? "bg-profit hover:bg-profit/90"
                   : "bg-loss hover:bg-loss/90"
@@ -422,8 +413,8 @@ export function OrderPad({
               {isBuy ? "BUY" : "SELL"} {ticker}
             </button>
 
-            <p className="text-2xs text-center text-muted dark:text-muted-dark">
-              Simulated paper trade — no real money involved
+            <p className="terminal-subtle text-center text-2xs">
+              Simulated paper trade - no real money involved
             </p>
           </div>
         </Dialog.Content>

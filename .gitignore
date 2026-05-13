@@ -45,3 +45,5 @@ __pycache__/
 
 # local build/debug output
 build-output.log
+.codex-*.log
+.codex-*.png

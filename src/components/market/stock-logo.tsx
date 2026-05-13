@@ -26,7 +26,7 @@ export function StockLogo({ ticker, logoUrl, className, textClassName }: StockLo
     return (
       <div
         className={cn(
-          "rounded-lg bg-gradient-to-br from-accent/[0.06] to-accent/[0.12] dark:from-accent/[0.08] dark:to-accent/[0.16] flex items-center justify-center text-accent font-bold",
+          "rounded-sm bg-[var(--terminal-accent-soft)] flex items-center justify-center text-[var(--terminal-accent)] font-bold",
           className,
           textClassName
         )}
@@ -37,7 +37,7 @@ export function StockLogo({ ticker, logoUrl, className, textClassName }: StockLo
   }
 
   return (
-    <div className={cn("rounded-lg bg-white dark:bg-card-dark overflow-hidden border border-border/50 dark:border-border-dark/60", className)}>
+    <div className={cn("rounded-sm bg-[var(--terminal-surface)] overflow-hidden border border-[color:var(--terminal-grid)]", className)}>
       <Image
         src={resolvedLogoUrl}
         alt={`${ticker} logo`}
