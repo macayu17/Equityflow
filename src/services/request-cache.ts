@@ -19,6 +19,7 @@ const inFlight = new Map<string, Promise<unknown | null>>();
 let apiCooldownUntil = 0;
 
 function defaultTtlMs(path: string): number {
+  const livePriceTtlMs = Math.max(1_000, Math.min(API_CONFIG.pricePollingMs, 2_500));
   if (path.startsWith("/api/fno/resolve")) return 10 * 60_000;
   if (path.startsWith("/api/stock-details/")) return 5 * 60_000;
   if (path.startsWith("/api/stocks")) return 2 * 60_000;
@@ -27,11 +28,11 @@ function defaultTtlMs(path: string): number {
   if (path.startsWith("/api/candles/")) return 15_000;
   if (path.startsWith("/api/depth/")) return 5_000;
   if (path.startsWith("/api/option-chain")) return 15_000;
-  if (path.startsWith("/api/ltp")) return 3_000;
-  if (path.startsWith("/api/quote")) return 5_000;
-  if (path.startsWith("/api/stock/")) return 5_000;
-  if (path.startsWith("/api/fno/quote/")) return 5_000;
-  if (path.startsWith("/api/commodity/quote/")) return 5_000;
+  if (path.startsWith("/api/ltp")) return livePriceTtlMs;
+  if (path.startsWith("/api/quote")) return livePriceTtlMs;
+  if (path.startsWith("/api/stock/")) return livePriceTtlMs;
+  if (path.startsWith("/api/fno/quote/")) return livePriceTtlMs;
+  if (path.startsWith("/api/commodity/quote/")) return livePriceTtlMs;
   if (path.startsWith("/api/indices")) return 30_000;
   if (path.startsWith("/api/status")) return 15_000;
   return 10_000;

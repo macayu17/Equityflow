@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowLeftRight,
   CheckCircle2,
   ExternalLink,
   PlugZap,
@@ -17,12 +18,18 @@ import {
   exchangeUpstoxCode,
   getApiStatus,
   getUpstoxAuthUrl,
+  setProviderPreference,
   type ApiStatus,
+  type MarketDataProvider,
 } from "@/services/api";
 import { useToast } from "@/components/toast-provider";
 import { cn } from "@/lib/utils";
 
 type ProviderState = NonNullable<ApiStatus["providers"]>[string];
+const MARKET_PROVIDERS: { value: MarketDataProvider; label: string }[] = [
+  { value: "groww", label: "Groww" },
+  { value: "upstox", label: "Upstox" },
+];
 
 function providerTone(provider?: ProviderState) {
   if (provider?.connected) return "text-profit";
@@ -42,7 +49,7 @@ function formatTime(value?: string | null) {
   });
 }
 
-function ProviderRow({ label, provider }: { label: string; provider?: ProviderState }) {
+function ProviderRow({ label, provider, active = false }: { label: string; provider?: ProviderState; active?: boolean }) {
   const connected = Boolean(provider?.connected);
   const configured = Boolean(provider?.configured);
   return (
@@ -57,6 +64,11 @@ function ProviderRow({ label, provider }: { label: string; provider?: ProviderSt
             <AlertTriangle size={13} className="text-loss" />
           )}
           <span className="text-[11px] font-bold uppercase tracking-[0.1em]">{label}</span>
+          {active && (
+            <span className="rounded-sm border border-[color:var(--terminal-accent)] px-1 font-mono text-[9px] uppercase text-[var(--terminal-accent)]">
+              primary
+            </span>
+          )}
         </div>
         <div className="terminal-subtle mt-1 truncate font-mono text-[10px]">
           {connected ? "connected" : configured ? "configured, waiting" : provider?.reason ?? "not configured"}
@@ -134,9 +146,25 @@ export function ProviderStatusPanel() {
 
   const upstox = status?.providers?.upstox;
   const groww = status?.providers?.groww;
-  const preferred = status?.provider ?? "upstox";
+  const preferred = ((status?.provider === "upstox" || status?.provider === "groww") ? status.provider : "groww") as MarketDataProvider;
   const isConnected = Boolean(status?.connected);
   const degraded = status?.degraded_reason;
+
+  const switchProvider = async (provider: MarketDataProvider) => {
+    if (provider === preferred) return;
+    setBusy(true);
+    try {
+      const result = await setProviderPreference(provider);
+      if (!result?.provider) {
+        toast({ title: "Provider Switch Failed", description: "Backend did not accept the provider preference.", variant: "error" });
+        return;
+      }
+      toast({ title: "Provider Preference Updated", description: `${result.provider.toUpperCase()} is now primary.`, variant: "success" });
+      await refresh(true);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const connect = async () => {
     setBusy(true);
@@ -198,14 +226,42 @@ export function ProviderStatusPanel() {
             </button>
           </div>
 
-          <ProviderRow label="Upstox" provider={upstox} />
-          <ProviderRow label="Groww" provider={groww} />
+          <div className="border-b border-[color:var(--terminal-grid)] px-3 py-2">
+            <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.1em] terminal-subtle">
+              <ArrowLeftRight size={12} />
+              API key preference
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {MARKET_PROVIDERS.map((provider) => {
+                const active = preferred === provider.value;
+                return (
+                  <button
+                    key={provider.value}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => void switchProvider(provider.value)}
+                    disabled={busy}
+                    className={cn(
+                      "terminal-action h-8 gap-1.5 text-[10px] uppercase tracking-[0.08em]",
+                      active && "border-[color:var(--terminal-accent)] bg-[var(--terminal-hover)] text-[var(--terminal-accent)]"
+                    )}
+                  >
+                    {active ? <CheckCircle2 size={12} /> : <Radio size={12} />}
+                    {provider.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <ProviderRow label="Groww" provider={groww} active={preferred === "groww"} />
+          <ProviderRow label="Upstox" provider={upstox} active={preferred === "upstox"} />
 
           <div className="space-y-2 border-t border-[color:var(--terminal-border)] p-3">
             <div className="grid grid-cols-2 gap-2">
               <button type="button" onClick={connect} disabled={busy} className="terminal-action gap-1.5">
                 <PlugZap size={12} />
-                Connect
+                Upstox Login
               </button>
               <button type="button" onClick={() => void refresh(true)} disabled={busy} className="terminal-action gap-1.5">
                 <RefreshCw size={12} />

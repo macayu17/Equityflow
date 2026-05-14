@@ -34,7 +34,7 @@ export const API_CONFIG = {
   // Groww API base URL (proxied through our FastAPI backend)
   baseUrl: normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL),
   // Polling intervals
-  pricePollingMs: Number(process.env.NEXT_PUBLIC_PRICE_POLL_MS || 10_000),
+  pricePollingMs: Number(process.env.NEXT_PUBLIC_PRICE_POLL_MS || 3_000),
   indexPollingMs: Number(process.env.NEXT_PUBLIC_INDEX_POLL_MS || 30_000),
   // Virtual trading defaults
   defaultBalance: 100000,

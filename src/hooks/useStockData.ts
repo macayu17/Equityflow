@@ -24,8 +24,8 @@ export function useFnoQuote(ticker: string | null) {
     queryKey: ["fno-price", ticker],
     queryFn: () => getFnoQuote(ticker!),
     enabled: !!ticker,
-    refetchInterval: isFnoMarketOpen ? Math.max(API_CONFIG.pricePollingMs, 10_000) : false,
-    staleTime: 5_000,
+    refetchInterval: isFnoMarketOpen ? API_CONFIG.pricePollingMs : false,
+    staleTime: Math.max(1_000, API_CONFIG.pricePollingMs - 500),
   });
 }
 
@@ -35,8 +35,8 @@ export function useCommodityQuote(ticker: string | null) {
     queryKey: ["commodity-price", ticker],
     queryFn: () => getCommodityQuote(ticker!),
     enabled: !!ticker,
-    refetchInterval: isCommodityMarketOpen ? Math.max(API_CONFIG.pricePollingMs, 15_000) : false,
-    staleTime: 5_000,
+    refetchInterval: isCommodityMarketOpen ? API_CONFIG.pricePollingMs : false,
+    staleTime: Math.max(1_000, API_CONFIG.pricePollingMs - 500),
   });
 }
 
@@ -72,7 +72,7 @@ export function useMarketDepth(ticker: string) {
     queryKey: ["market-depth", ticker],
     queryFn: () => getMarketDepth(ticker),
     enabled: !!ticker && isEquityMarketOpen,
-    refetchInterval: isEquityMarketOpen ? 5_000 : false,
+    refetchInterval: isEquityMarketOpen ? API_CONFIG.pricePollingMs : false,
     staleTime: 2_500,
   });
 }
@@ -105,8 +105,8 @@ export function useFullQuote(
     queryKey: ["full-quote", exchange, segment, tradingSymbol],
     queryFn: () => getFullQuote(tradingSymbol!, exchange, segment),
     enabled: !!tradingSymbol,
-    refetchInterval: Math.max(API_CONFIG.pricePollingMs, 10_000),
-    staleTime: 5_000,
+    refetchInterval: API_CONFIG.pricePollingMs,
+    staleTime: Math.max(1_000, API_CONFIG.pricePollingMs - 500),
   });
 }
 

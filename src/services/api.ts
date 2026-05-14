@@ -1,5 +1,5 @@
 ﻿/**
- * API Service â€” interfaces with FastAPI backend (Upstox-preferred market data proxy).
+ * API Service â€” interfaces with FastAPI backend (Groww-primary market data proxy).
  * All data comes from the live backend API.
  */
 
@@ -40,6 +40,12 @@ export async function exchangeUpstoxCode(code: string, redirectUri?: string): Pr
 
 export async function disconnectUpstox(): Promise<UpstoxDisconnectResponse | null> {
   const result = await apiDeleteJson<UpstoxDisconnectResponse>("/api/upstox/auth/token");
+  clearApiRequestCache();
+  return result;
+}
+
+export async function setProviderPreference(provider: MarketDataProvider): Promise<ProviderPreferenceResponse | null> {
+  const result = await apiPostJson<ProviderPreferenceResponse>("/api/provider/preference", { provider });
   clearApiRequestCache();
   return result;
 }
@@ -111,7 +117,7 @@ export interface StockListItem {
 
 export interface ApiStatus {
   connected: boolean;
-  provider?: "upstox" | "groww" | string;
+  provider?: MarketDataProvider | string;
   provider_order?: string[];
   reason?: string;
   auth_mode?: string;
@@ -133,6 +139,13 @@ export interface ApiStatus {
     last_error?: Record<string, unknown>;
     last_success_at?: string | null;
   }>;
+}
+
+export type MarketDataProvider = "groww" | "upstox";
+
+export interface ProviderPreferenceResponse {
+  provider: MarketDataProvider;
+  provider_order: MarketDataProvider[];
 }
 
 export interface ProviderCacheDiagnostics {

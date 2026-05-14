@@ -1,6 +1,6 @@
 """
 EquityFlow â€” FastAPI Backend
-Upstox-preferred market-data integration with Groww fallback.
+Groww-primary market-data integration with Upstox fallback.
 
 Authentication:
     Uses API Key + Secret â†’ SHA-256 checksum â†’ token exchange.
@@ -156,7 +156,7 @@ def _last_trading_day(date_ref: datetime, holiday_set: set[str]) -> datetime:
 
 app = FastAPI(
     title="EquityFlow API",
-    description="Backend proxy for Upstox-preferred market data with Groww fallback.",
+    description="Backend proxy for Groww-primary market data with Upstox fallback.",
     version="2.0.0",
 )
 
@@ -182,7 +182,28 @@ UPSTOX_TOKEN_FILE = os.getenv(
     "UPSTOX_TOKEN_FILE",
     os.path.join(os.path.dirname(__file__), ".upstox-token.json"),
 )
-MARKET_DATA_PROVIDER = os.getenv("MARKET_DATA_PROVIDER", "upstox").strip().lower()
+
+
+def _normalize_market_provider(value: str | None) -> str:
+    provider = (value or "groww").strip().lower()
+    if provider in {"grow", "groww"}:
+        return "groww"
+    if provider in {"upstox", "upstoxx"}:
+        return "upstox"
+    raise ValueError("provider must be 'groww' or 'upstox'")
+
+
+def _read_market_provider_env() -> str:
+    raw = os.getenv("MARKET_DATA_PROVIDER", "groww")
+    try:
+        return _normalize_market_provider(raw)
+    except ValueError:
+        print(f"[EquityFlow] Startup WARNING: Invalid MARKET_DATA_PROVIDER={raw!r}; using Groww.")
+        return "groww"
+
+
+MARKET_DATA_PROVIDER = _read_market_provider_env()
+_market_data_provider_preference = MARKET_DATA_PROVIDER
 
 
 def _clean_access_token(value: str) -> str:
@@ -354,9 +375,15 @@ def _is_upstox_configured() -> bool:
 
 def _market_provider_order() -> list[str]:
     """Preferred provider order for market-data calls."""
-    if MARKET_DATA_PROVIDER == "groww":
+    if _market_data_provider_preference == "groww":
         return ["groww", "upstox"]
     return ["upstox", "groww"]
+
+
+def _set_market_provider_preference(provider: str) -> str:
+    global _market_data_provider_preference
+    _market_data_provider_preference = _normalize_market_provider(provider)
+    return _market_data_provider_preference
 
 
 # â”€â”€â”€ FNO Instruments Index (from instruments.csv) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -469,16 +496,16 @@ def _groww_cache_ttl(path: str, params: dict | None = None) -> float:
     if path.startswith("/order/"):
         return 0.0
     if path == "/live-data/ltp":
-        return float(os.getenv("GROWW_LTP_CACHE_TTL_SEC", "3"))
+        return _env_float("GROWW_LTP_CACHE_TTL_SEC", 1.25, 0.0)
     if path == "/live-data/quote":
-        return float(os.getenv("GROWW_QUOTE_CACHE_TTL_SEC", "5"))
+        return _env_float("GROWW_QUOTE_CACHE_TTL_SEC", 2.5, 0.0)
     if path == "/live-data/ohlc":
-        return float(os.getenv("GROWW_OHLC_CACHE_TTL_SEC", "120"))
+        return _env_float("GROWW_OHLC_CACHE_TTL_SEC", 120, 0.0)
     if path.startswith("/option-chain"):
-        return float(os.getenv("GROWW_OPTION_CHAIN_CACHE_TTL_SEC", "15"))
+        return _env_float("GROWW_OPTION_CHAIN_CACHE_TTL_SEC", 15, 0.0)
     if path.startswith("/live-data/greeks"):
-        return float(os.getenv("GROWW_GREEKS_CACHE_TTL_SEC", "15"))
-    return float(os.getenv("GROWW_DEFAULT_CACHE_TTL_SEC", "10"))
+        return _env_float("GROWW_GREEKS_CACHE_TTL_SEC", 15, 0.0)
+    return _env_float("GROWW_DEFAULT_CACHE_TTL_SEC", 10, 0.0)
 
 
 def _upstox_cache_key(path: str, params: dict | None) -> str:
@@ -486,20 +513,30 @@ def _upstox_cache_key(path: str, params: dict | None) -> str:
     return json.dumps([path, normalized_params], separators=(",", ":"))
 
 
+def _env_float(name: str, default: float, min_value: float | None = None) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None:
+        return max(min_value, value)
+    return value
+
+
 def _upstox_cache_ttl(path: str, params: dict | None = None) -> float:
     """Cache Upstox reads conservatively so UI bursts do not hit rate limits."""
     del params
     if path.startswith("/v3/market-quote/ltp"):
-        return float(os.getenv("UPSTOX_LTP_CACHE_TTL_SEC", "3"))
+        return _env_float("UPSTOX_LTP_CACHE_TTL_SEC", 1.25, 0.0)
     if path.startswith("/v2/market-quote/quotes"):
-        return float(os.getenv("UPSTOX_QUOTE_CACHE_TTL_SEC", "5"))
+        return _env_float("UPSTOX_QUOTE_CACHE_TTL_SEC", 2.5, 0.0)
     if path.startswith("/v3/market-quote/ohlc"):
-        return float(os.getenv("UPSTOX_OHLC_CACHE_TTL_SEC", "60"))
+        return _env_float("UPSTOX_OHLC_CACHE_TTL_SEC", 60, 0.0)
     if path.startswith("/v2/option/chain"):
-        return float(os.getenv("UPSTOX_OPTION_CHAIN_CACHE_TTL_SEC", "15"))
+        return _env_float("UPSTOX_OPTION_CHAIN_CACHE_TTL_SEC", 15, 0.0)
     if path.startswith("/v3/historical-candle"):
-        return float(os.getenv("UPSTOX_CANDLE_CACHE_TTL_SEC", "30"))
-    return float(os.getenv("UPSTOX_DEFAULT_CACHE_TTL_SEC", "10"))
+        return _env_float("UPSTOX_CANDLE_CACHE_TTL_SEC", 30, 0.0)
+    return _env_float("UPSTOX_DEFAULT_CACHE_TTL_SEC", 10, 0.0)
 
 
 def _prune_groww_cache() -> None:
@@ -587,8 +624,8 @@ async def _startup():
     _validate_startup_env()
     _get_upstox_access_token()
     if _is_upstox_configured():
-        print("[EquityFlow] Startup: Upstox access token configured; Upstox is preferred for market data.")
-    elif MARKET_DATA_PROVIDER != "groww":
+        print(f"[EquityFlow] Startup: Upstox access token configured; provider order is {' > '.join(_market_provider_order())}.")
+    elif _market_provider_order()[0] != "groww":
         print("[EquityFlow] Startup: UPSTOX_ACCESS_TOKEN missing; market data will fall back to Groww.")
     _get_http_client()  # warm up
     _get_upstox_http_client()
@@ -773,6 +810,10 @@ class CommodityQuote(StockQuote):
 class UpstoxTokenRequest(BaseModel):
     code: str
     redirect_uri: Optional[str] = None
+
+
+class ProviderPreferenceRequest(BaseModel):
+    provider: str
 
 
 # â”€â”€â”€ Order Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2125,28 +2166,55 @@ async def api_status():
             "last_success_at": _groww_last_success_at,
         }
 
-    preferred = _market_provider_order()[0]
+    provider_order = _market_provider_order()
+    preferred = provider_order[0]
     connected = bool(upstox_status["connected"] or groww_status["connected"])
     if preferred == "upstox" and not upstox_status["configured"]:
         degraded_reason = "Upstox token missing; falling back to Groww"
     elif preferred == "upstox" and upstox_cooldown:
         degraded_reason = f"Upstox rate limited for {upstox_cooldown}s"
+    elif preferred == "groww" and not groww_status["configured"]:
+        degraded_reason = "Groww credentials missing; falling back to Upstox"
     elif preferred == "groww" and groww_cooldown:
         degraded_reason = f"Groww rate limited for {groww_cooldown}s"
+
+    primary_status = groww_status if preferred == "groww" else upstox_status
+    fallback_status = upstox_status if preferred == "groww" else groww_status
+    fallback_provider = "upstox" if preferred == "groww" else "groww"
+
+    def provider_auth_mode(provider: str, provider_status: dict) -> str:
+        mode = provider_status.get("auth_mode", "")
+        return f"upstox_{mode}" if provider == "upstox" and mode else mode
+
+    auth_mode = provider_auth_mode(preferred, primary_status) or provider_auth_mode(fallback_provider, fallback_status)
 
     return {
         "connected": connected,
         "provider": preferred,
-        "provider_order": _market_provider_order(),
-        "auth_mode": f"upstox_{upstox_status['auth_mode']}" if upstox_status["configured"] else groww_status.get("auth_mode", ""),
+        "provider_order": provider_order,
+        "auth_mode": auth_mode,
         "degraded_reason": degraded_reason,
         "rate_limited_for_sec": max(upstox_cooldown, groww_cooldown),
-        "last_error": _upstox_last_error or _groww_last_error,
-        "last_success_at": _upstox_last_success_at or _groww_last_success_at,
+        "last_error": primary_status.get("last_error") or fallback_status.get("last_error") or {},
+        "last_success_at": primary_status.get("last_success_at") or fallback_status.get("last_success_at"),
         "providers": {
             "upstox": upstox_status,
             "groww": groww_status,
         },
+    }
+
+
+@app.post("/api/provider/preference")
+async def set_provider_preference(payload: ProviderPreferenceRequest):
+    """Switch the runtime market-data provider preference."""
+    try:
+        provider = _set_market_provider_preference(payload.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "provider": provider,
+        "provider_order": _market_provider_order(),
     }
 
 
@@ -3233,8 +3301,16 @@ MOCK_INDEX_DATA = {
     "MCX CRUDEOIL":    {"base": 5815.00, "change": 45.50},
 }
 
+def _active_commodity_symbol(category: str) -> str | None:
+    contract = next(
+        (item for item in MOCK_COMMODITIES if item.get("category") == category),
+        None,
+    )
+    return f"MCX_{contract['ticker']}" if contract else None
+
+
 # Groww exchange symbols for indices â€” used by LTP/OHLC batch endpoints
-# Equity indices use segment=CASH; MCX "indices" use the nearest-month futures
+# Equity indices use segment=CASH; MCX "indices" use active futures only.
 INDEX_GROWW_SYMBOLS = {
     "NIFTY 50":            {"sym": "NSE_NIFTY",        "segment": "CASH"},
     "SENSEX":              {"sym": "BSE_SENSEX",       "segment": "CASH"},
@@ -3245,11 +3321,12 @@ INDEX_GROWW_SYMBOLS = {
     "NIFTY FIN SERVICE":   {"sym": "NSE_FINNIFTY",     "segment": "CASH"},
     "NIFTY NEXT 50":       {"sym": "NSE_NIFTYJR", "resp_key": "NSE_NIFTYNXT50", "segment": "CASH"},
     "INDIA VIX":           {"sym": "NSE_INDIAVIX",     "segment": "CASH"},
-    # MCX "indices" â†’ just show the nearest-month futures LTP
-    "MCX GOLD":            {"sym": "MCX_GOLD02APR26FUT",       "segment": "COMMODITY"},
-    "MCX SILVER":          {"sym": "MCX_SILVER05MAR26FUT",     "segment": "COMMODITY"},
-    "MCX CRUDEOIL":        {"sym": "MCX_CRUDEOIL19MAR26FUT",   "segment": "COMMODITY"},
 }
+
+for _name, _category in (("MCX GOLD", "Gold"), ("MCX SILVER", "Silver"), ("MCX CRUDEOIL", "Crude Oil")):
+    _symbol = _active_commodity_symbol(_category)
+    if _symbol:
+        INDEX_GROWW_SYMBOLS[_name] = {"sym": _symbol, "segment": "COMMODITY"}
 
 @app.get("/api/indices", response_model=list[MarketIndex])
 async def get_indices():
@@ -3718,6 +3795,17 @@ _sse_prev_close_cache: dict = {}      # Last known prev-close: {NSE_RELIANCE: 14
 _sse_groww_ts: float = 0
 _sse_ohlc_ts: float = 0              # OHLC only refreshed every 5 minutes
 _sse_ohlc_task = None
+SSE_FAST_REFRESH_SEC = _env_float("SSE_FAST_REFRESH_SEC", 1.5, 0.5)
+SSE_IDLE_REFRESH_SEC = _env_float("SSE_IDLE_REFRESH_SEC", 15.0, 5.0)
+SSE_COMMODITY_REFRESH_SEC = _env_float("SSE_COMMODITY_REFRESH_SEC", 3.0, 1.0)
+SSE_INDEX_REFRESH_SEC = _env_float("SSE_INDEX_REFRESH_SEC", 5.0, 1.0)
+SSE_STATUS_REFRESH_SEC = _env_float("SSE_STATUS_REFRESH_SEC", 5.0, 1.0)
+_workstation_commodities_payload: dict = {}
+_workstation_commodities_ts: float = 0
+_workstation_indices_payload: list[dict] = []
+_workstation_indices_ts: float = 0
+_workstation_status_payload: dict | None = None
+_workstation_status_ts: float = 0
 
 
 def _parse_symbol_list(raw: str, fallback_count: int = 12) -> list[str]:
@@ -3852,12 +3940,16 @@ async def _build_workstation_snapshot(
     depth_symbol: str | None = None,
 ) -> dict:
     global _sse_groww_ohlc_cache, _sse_prev_close_cache, _sse_ohlc_ts
+    global _workstation_commodities_payload, _workstation_commodities_ts
+    global _workstation_indices_payload, _workstation_indices_ts
+    global _workstation_status_payload, _workstation_status_ts
 
+    now_ts = time.time()
     stock_tickers = _parse_symbol_list(symbols)
     stock_symbols = [f"NSE_{ticker}" for ticker in stock_tickers]
     ltp_data = await _fetch_batch_ltp("CASH", stock_symbols)
     ohlc_data = {key: _sse_groww_ohlc_cache.get(key) for key in stock_symbols}
-    needs_ohlc = (time.time() - _sse_ohlc_ts) > 120 or any(v is None for v in ohlc_data.values())
+    needs_ohlc = (now_ts - _sse_ohlc_ts) > 120 or any(v is None for v in ohlc_data.values())
     if needs_ohlc:
         fresh_ohlc = await _fetch_batch_ohlc("CASH", stock_symbols)
         if fresh_ohlc:
@@ -3880,60 +3972,82 @@ async def _build_workstation_snapshot(
 
     commodities_payload: dict = {}
     if include_commodities:
-        commodity_symbols = [
-            f"MCX_{c['ticker']}"
-            for c in MOCK_COMMODITIES
-            if c.get("category") != "Electricity"
-        ]
-        commodity_ltp = await _fetch_batch_ltp("COMMODITY", commodity_symbols)
-        commodity_ohlc = {key: _sse_groww_ohlc_cache.get(key) for key in commodity_symbols}
-        needs_commodity_ohlc = (time.time() - _sse_ohlc_ts) > 120 or any(v is None for v in commodity_ohlc.values())
-        if needs_commodity_ohlc:
-            fresh_commodity_ohlc = await _fetch_batch_ohlc("COMMODITY", commodity_symbols)
-            if fresh_commodity_ohlc:
-                _sse_groww_ohlc_cache.update(fresh_commodity_ohlc)
-                _sse_ohlc_ts = time.time()
-                for key, raw in fresh_commodity_ohlc.items():
-                    close_val = _extract_prev_close(raw, 0)
-                    if close_val > 0:
-                        _sse_prev_close_cache[key] = close_val
-                commodity_ohlc.update(fresh_commodity_ohlc)
-        for comm in MOCK_COMMODITIES:
-            ticker = comm["ticker"]
-            key = f"MCX_{ticker}"
-            live_ltp = commodity_ltp.get(key)
-            if isinstance(live_ltp, (int, float)) and live_ltp > 0:
-                prev_close = _extract_prev_close(commodity_ohlc.get(key), float(live_ltp))
-                commodities_payload[ticker] = _build_price_payload(
-                    ticker,
-                    float(live_ltp),
-                    prev_close,
-                    comm.get("name"),
-                )
+        commodities_payload = dict(_workstation_commodities_payload)
+        commodity_cache_stale = (
+            not _workstation_commodities_payload
+            or (now_ts - _workstation_commodities_ts) >= SSE_COMMODITY_REFRESH_SEC
+        )
+        if commodity_cache_stale:
+            commodity_symbols = [
+                f"MCX_{c['ticker']}"
+                for c in MOCK_COMMODITIES
+                if c.get("category") != "Electricity"
+            ]
+            commodity_ltp = await _fetch_batch_ltp("COMMODITY", commodity_symbols)
+            commodity_ohlc = {key: _sse_groww_ohlc_cache.get(key) for key in commodity_symbols}
+            needs_commodity_ohlc = (now_ts - _sse_ohlc_ts) > 120 or any(v is None for v in commodity_ohlc.values())
+            if needs_commodity_ohlc:
+                fresh_commodity_ohlc = await _fetch_batch_ohlc("COMMODITY", commodity_symbols)
+                if fresh_commodity_ohlc:
+                    _sse_groww_ohlc_cache.update(fresh_commodity_ohlc)
+                    _sse_ohlc_ts = time.time()
+                    for key, raw in fresh_commodity_ohlc.items():
+                        close_val = _extract_prev_close(raw, 0)
+                        if close_val > 0:
+                            _sse_prev_close_cache[key] = close_val
+                    commodity_ohlc.update(fresh_commodity_ohlc)
+            fresh_commodities: dict = {}
+            for comm in MOCK_COMMODITIES:
+                ticker = comm["ticker"]
+                key = f"MCX_{ticker}"
+                live_ltp = commodity_ltp.get(key)
+                if isinstance(live_ltp, (int, float)) and live_ltp > 0:
+                    prev_close = _extract_prev_close(commodity_ohlc.get(key), float(live_ltp))
+                    fresh_commodities[ticker] = _build_price_payload(
+                        ticker,
+                        float(live_ltp),
+                        prev_close,
+                        comm.get("name"),
+                    )
+            _workstation_commodities_ts = time.time()
+            if fresh_commodities:
+                _workstation_commodities_payload = fresh_commodities
+                commodities_payload = fresh_commodities
 
     indices_payload: list[dict] = []
     if include_indices:
-        cash_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "CASH"]
-        comm_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "COMMODITY"]
-        cash_ltp, comm_ltp = await asyncio.gather(
-            _fetch_batch_ltp("CASH", cash_syms),
-            _fetch_batch_ltp("COMMODITY", comm_syms),
+        indices_payload = list(_workstation_indices_payload)
+        index_cache_stale = (
+            not _workstation_indices_payload
+            or (now_ts - _workstation_indices_ts) >= SSE_INDEX_REFRESH_SEC
         )
-        index_ltp = {**cash_ltp, **comm_ltp}
-        for name, info in MOCK_INDEX_DATA.items():
-            idx_info = INDEX_GROWW_SYMBOLS.get(name)
-            if not idx_info:
-                continue
-            cache_key = idx_info.get("resp_key", idx_info["sym"])
-            live_val = index_ltp.get(cache_key)
-            if isinstance(live_val, (int, float)) and live_val > 0:
-                base = float(info.get("base", live_val))
-                indices_payload.append({
-                    "name": name,
-                    "value": float(live_val),
-                    "change": round(float(live_val) - base, 2),
-                    "changePercent": round(((float(live_val) - base) / base) * 100, 2) if base else 0,
-                })
+        if index_cache_stale:
+            cash_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "CASH"]
+            comm_syms = [v["sym"] for v in INDEX_GROWW_SYMBOLS.values() if v["segment"] == "COMMODITY"]
+            cash_ltp, comm_ltp = await asyncio.gather(
+                _fetch_batch_ltp("CASH", cash_syms),
+                _fetch_batch_ltp("COMMODITY", comm_syms),
+            )
+            index_ltp = {**cash_ltp, **comm_ltp}
+            fresh_indices: list[dict] = []
+            for name, info in MOCK_INDEX_DATA.items():
+                idx_info = INDEX_GROWW_SYMBOLS.get(name)
+                if not idx_info:
+                    continue
+                cache_key = idx_info.get("resp_key", idx_info["sym"])
+                live_val = index_ltp.get(cache_key)
+                if isinstance(live_val, (int, float)) and live_val > 0:
+                    base = float(info.get("base", live_val))
+                    fresh_indices.append({
+                        "name": name,
+                        "value": float(live_val),
+                        "change": round(float(live_val) - base, 2),
+                        "changePercent": round(((float(live_val) - base) / base) * 100, 2) if base else 0,
+                    })
+            _workstation_indices_ts = time.time()
+            if fresh_indices:
+                _workstation_indices_payload = fresh_indices
+                indices_payload = fresh_indices
 
     depth_payload = None
     if depth_symbol:
@@ -3951,7 +4065,12 @@ async def _build_workstation_snapshot(
             quote = await _upstox_full_quote(depth_ticker, "CASH", "NSE")
         depth_payload = _extract_depth_payload(quote if isinstance(quote, dict) else None)
 
-    status = await api_status()
+    if _workstation_status_payload is None or (now_ts - _workstation_status_ts) >= SSE_STATUS_REFRESH_SEC:
+        status = await api_status()
+        _workstation_status_payload = status
+        _workstation_status_ts = time.time()
+    else:
+        status = dict(_workstation_status_payload)
     live_count = len(prices) + len(commodities_payload) + len(indices_payload)
     if live_count == 0 and not status.get("degraded_reason"):
         status = {
@@ -3993,7 +4112,7 @@ async def stream_workstation(
                 yield f"data: {json.dumps(snapshot)}\n\n"
                 equity_open = _is_equity_market_open()
                 commodity_open = _is_commodity_market_open()
-                await asyncio.sleep(3.0 if (equity_open or commodity_open) else 15.0)
+                await asyncio.sleep(SSE_FAST_REFRESH_SEC if (equity_open or commodity_open) else SSE_IDLE_REFRESH_SEC)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -4110,7 +4229,7 @@ async def stream_stock_price(ticker: str, exchange: str = Query("NSE"), segment:
             try:
                 now = time.time()
                 is_open = _is_commodity_market_open() if seg == "COMMODITY" else _is_equity_market_open()
-                loop_sleep = 3.0 if is_open else 15.0
+                loop_sleep = SSE_FAST_REFRESH_SEC if is_open else SSE_IDLE_REFRESH_SEC
 
                 # Refresh prev_close periodically
                 if prev_close is None or (now - prev_close_ts) > 120:
@@ -4169,7 +4288,7 @@ async def stream_demand_prices(tickers: str = Query("", description="Comma-separ
             try:
                 now = time.time()
                 is_open = _is_equity_market_open()
-                loop_sleep = 3.0 if is_open else 15.0
+                loop_sleep = SSE_FAST_REFRESH_SEC if is_open else SSE_IDLE_REFRESH_SEC
 
                 # Refresh prev_close every 60s
                 if not prev_closes or (now - prev_close_ts) > (120 if is_open else 600):
@@ -4266,7 +4385,7 @@ async def stream_prices():
                 equity_open = _is_equity_market_open()
                 commodity_open = _is_commodity_market_open()
 
-                refresh_interval = 5.0 if (equity_open or commodity_open) else 30.0
+                refresh_interval = SSE_FAST_REFRESH_SEC if (equity_open or commodity_open) else 30.0
                 if time.time() - _sse_groww_ts > refresh_interval:
                     if groww_task is None or groww_task.done():
                         groww_task = asyncio.create_task(_refresh_groww_ltp_cache())

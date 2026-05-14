@@ -7,7 +7,7 @@ The product direction is a dense terminal-style desk: compact market tables, a b
 ## What It Does
 
 - Streams Indian equity, F&O, index, and commodity prices through the backend.
-- Prefers Upstox for market data and falls back to Groww where supported.
+- Prefers Groww for market data and can switch to Upstox from the provider panel when needed.
 - Simulates paper orders in the browser with local portfolio state.
 - Supports MARKET, LIMIT, SL, and SL-M orders.
 - Tracks queued orders, partial fills, cancel and modify flows, positions, holdings, charges, margin, and risk.
@@ -33,8 +33,8 @@ Backend:
 - FastAPI
 - Uvicorn
 - httpx
-- Upstox market-data integration
-- Groww fallback integration
+- Groww market-data integration
+- Upstox fallback integration
 - Server-sent events for price streams
 
 ## Project Layout
@@ -96,7 +96,7 @@ Create `backend/.env` from `backend/.env.example`.
 Minimal local configuration:
 
 ```env
-MARKET_DATA_PROVIDER=upstox
+MARKET_DATA_PROVIDER=groww
 UPSTOX_ACCESS_TOKEN=
 UPSTOX_API_KEY=
 UPSTOX_API_SECRET=
@@ -104,11 +104,14 @@ UPSTOX_REDIRECT_URI=http://localhost:3000
 GROWW_API_KEY=
 GROWW_API_SECRET=
 GROWW_ACCESS_TOKEN=
+SSE_FAST_REFRESH_SEC=1.5
 HOST=127.0.0.1
 PORT=8001
 ```
 
-You can either paste an Upstox access token directly or configure the OAuth fields and use the provider panel in the app. Runtime OAuth tokens are stored locally in `backend/.upstox-token.json`; that file is ignored by git.
+Groww is the default primary provider. You can switch the runtime provider preference between Groww and Upstox from the top-bar provider panel. For Upstox, either paste an access token directly or configure the OAuth fields and use the provider panel in the app. Runtime OAuth tokens are stored locally in `backend/.upstox-token.json`; that file is ignored by git.
+
+Visible stock prices stream through SSE about every `SSE_FAST_REFRESH_SEC` seconds while the market is open. Increase that value if Groww or Upstox starts returning rate-limit responses.
 
 The frontend reads its backend URL from `.env.local`:
 

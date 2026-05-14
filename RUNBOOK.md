@@ -14,7 +14,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8001
 
 ### Backend (`backend/.env`)
 Use `backend/.env.example` as base:
-- `MARKET_DATA_PROVIDER=upstox` prefers Upstox for market data, with Groww fallback
+- `MARKET_DATA_PROVIDER=groww` prefers Groww for market data, with Upstox fallback
 - `UPSTOX_ACCESS_TOKEN` for a direct token, or OAuth fields below
 - `UPSTOX_API_KEY`
 - `UPSTOX_API_SECRET`
@@ -23,13 +23,16 @@ Use `backend/.env.example` as base:
 - `GROWW_API_KEY`
 - `GROWW_API_SECRET`
 - Optional `GROWW_ACCESS_TOKEN`
+- `SSE_FAST_REFRESH_SEC=1.5` for open-market visible-stock SSE ticks
+- `NEXT_PUBLIC_PRICE_POLL_MS=3000` for HTTP quote fallbacks in `.env.local`
 - Optional `CORS_ALLOW_ORIGINS=http://localhost:3000,http://127.0.0.1:3000`
 
 Provider behavior:
-- Upstox powers quotes, batch LTP/OHLC, candles, F&O resolution, option chain, stock lists, indices, and streams when `UPSTOX_ACCESS_TOKEN` is configured.
-- If OAuth fields are configured, use the top-bar provider panel to open the Upstox login URL and exchange the returned `code`. Runtime tokens are stored locally and are not committed.
-- Groww remains the fallback market-data provider and is still used for Groww-specific order, holdings, positions, fundamentals, and public charting fallbacks.
+- Groww is primary by default and is used for supported quotes, orders, holdings, positions, fundamentals, and public charting fallbacks.
+- Use the top-bar provider panel to switch the runtime market-data preference between Groww and Upstox.
+- If Upstox OAuth fields are configured, use the provider panel to open the Upstox login URL and exchange the returned `code`. Runtime tokens are stored locally and are not committed.
 - Request coalescing, TTL caches, and short cooldowns are enabled in `backend/main.py` to reduce rate-limit pressure.
+- The workstation stream refreshes visible stock LTPs faster than commodities, indices, and status metadata so active prices move without multiplying every side-data request.
 
 ## Start Services (Windows)
 From project root:
@@ -56,7 +59,7 @@ npm run dev -- --port 3000
 Use this when hosting the frontend on Vercel and the FastAPI backend on Azure App Service.
 
 ### App settings to add in Azure
-- `MARKET_DATA_PROVIDER=upstox`
+- `MARKET_DATA_PROVIDER=groww`
 - `UPSTOX_ACCESS_TOKEN` or `UPSTOX_API_KEY` + `UPSTOX_API_SECRET` + `UPSTOX_REDIRECT_URI`
 - `GROWW_API_KEY`
 - `GROWW_API_SECRET`
@@ -91,5 +94,6 @@ bash startup.sh
    - Generate a fresh OAuth code from the provider panel if the runtime token has expired
 4. **Groww auth failures**
    - Check startup logs for missing key/secret warning
+   - Switch provider preference to Upstox from the provider panel if Groww is unavailable
 5. **Slow/no live ticks**
    - Validate backend `/api/stream/*` endpoints first
