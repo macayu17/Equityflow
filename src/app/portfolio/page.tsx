@@ -13,6 +13,7 @@ import { Activity, BriefcaseBusiness, CandlestickChart, Clock3, History, RotateC
 import { useToast } from "@/components/toast-provider";
 import { apiGetJson } from "@/services/request-cache";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
+import { shouldAcceptFnoLtp } from "@/lib/fno-pricing";
 
 function isFnoContractTicker(ticker: string): boolean {
   const symbol = ticker.toUpperCase();
@@ -50,6 +51,7 @@ export default function PortfolioPage() {
   // SSE-based equity updates
   useEffect(() => {
     positions.forEach((position) => {
+      if (isFnoPosition(position)) return;
       const stream = prices[position.ticker] ?? commodities[position.ticker];
       if (!stream?.ltp || stream.ltp <= 0) return;
       if (stream.ltp !== position.ltp) {
@@ -111,7 +113,13 @@ export default function PortfolioPage() {
             const ltp = Number(ltpMap[key]);
             if (ltp > 0) {
               const pos = fnoPositions.find((p) => p.ticker === ticker);
-              if (pos && ltp !== pos.ltp) {
+              if (pos && ltp !== pos.ltp && shouldAcceptFnoLtp({
+                ticker,
+                stockName: pos.stockName,
+                avgPrice: pos.avg_price,
+                currentLtp: pos.ltp,
+                candidateLtp: ltp,
+              })) {
                 updateLTP(ticker, ltp);
               }
             }

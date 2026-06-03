@@ -2999,7 +2999,8 @@ async def get_fno_quote(ticker: str):
         "MIDCPNIFTY": "NSE_NIFTYMIDCAP",
         "NIFTYNXT50": "NSE_NIFTYNXT50",
     }
-    is_contract = ticker.endswith("FUT") or ((ticker.endswith("CE") or ticker.endswith("PE")) and bool(re.search(r"\d", ticker)))
+    is_option_contract = (ticker.endswith("CE") or ticker.endswith("PE")) and bool(re.search(r"\d", ticker))
+    is_contract = ticker.endswith("FUT") or is_option_contract
     upstox_segment = "FNO" if is_contract else "CASH"
 
     if _market_provider_order()[0] == "upstox":
@@ -3050,6 +3051,28 @@ async def get_fno_quote(ticker: str):
                         volume=0,
                         timestamp=datetime.now().isoformat(),
                     )
+    elif is_contract:
+        data = await _groww_get("/live-data/quote", {
+            "exchange": "NSE",
+            "segment": "FNO",
+            "trading_symbol": ticker,
+        })
+        if data and data.get("last_price"):
+            ohlc = _parse_ohlc(data)
+            return StockQuote(
+                ticker=ticker,
+                name=MOCK_FNO_UNDERLYINGS.get(ticker, {}).get("name", ticker),
+                exchange="NSE",
+                ltp=data.get("last_price", 0),
+                change=data.get("day_change", 0),
+                changePercent=data.get("day_change_perc", 0),
+                open=ohlc.get("open", 0),
+                high=ohlc.get("high", 0),
+                low=ohlc.get("low", 0),
+                close=ohlc.get("close", 0),
+                volume=data.get("volume", 0),
+                timestamp=datetime.now().isoformat(),
+            )
     else:
         data = await _groww_get("/live-data/quote", {
             "exchange": "NSE",
@@ -3091,6 +3114,12 @@ async def get_fno_quote(ticker: str):
                 volume=upstox_data.get("volume", 0),
                 timestamp=datetime.now().isoformat(),
             )
+
+    if is_option_contract:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to fetch option contract quote for {ticker}; use the resolved FNO symbol or option-chain premium.",
+        )
 
     fallback_key = ticker[:-3] if ticker.endswith("FUT") else ticker
     if fallback_key not in MOCK_FNO_UNDERLYINGS:

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
-import { MOCK_COMMODITIES, FNO_UNDERLYINGS } from "@/lib/constants";
+import { MOCK_COMMODITIES, FNO_UNDERLYINGS, FNO_EXPIRY_DATES } from "@/lib/constants";
 import { Briefcase, ArrowUpRight, ArrowDownRight, CandlestickChart, Search, WalletCards } from "lucide-react";
 import Link from "next/link";
 import { OrderPad } from "@/components/trading/order-pad";
@@ -12,13 +12,32 @@ import { useToast } from "@/components/toast-provider";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
 import type { OrderType, Position } from "@/lib/types";
 import { apiGetJson } from "@/services/request-cache";
+import { getFnoContractKind, parseFnoOptionContract, shouldAcceptFnoLtp } from "@/lib/fno-pricing";
+
+interface FnoOptionChainEntry {
+  strikePrice: number;
+  CE?: {
+    ltp?: number;
+  };
+  PE?: {
+    ltp?: number;
+  };
+}
+
+interface FnoOptionChainResponse {
+  optionChain?: FnoOptionChainEntry[];
+  strikes?: FnoOptionChainEntry[];
+}
 
 const COMMON_FNO_LOT_SIZES = [5500, 1600, 1100, 900, 750, 700, 550, 400, 350, 250, 175, 125, 100, 75, 65, 50, 30, 25, 20, 15];
 function isFnoPosition(position: Position): boolean {
-  return /(CE|PE|FUT)$/i.test(position.ticker) || /(CE|PE|FUT)/i.test(position.stockName || "");
+  return getFnoContractKind(position.ticker) !== null || getFnoContractKind(position.stockName || "") !== null;
 }
 
 function extractFnoUnderlying(position: Position): string {
+  const optionContract = parseFnoOptionContract(position.ticker, position.stockName);
+  if (optionContract) return optionContract.underlying;
+
   const ticker = position.ticker.toUpperCase();
   const stockName = (position.stockName || "").toUpperCase();
   const hasUnderlying = (value: string) => FNO_UNDERLYINGS.some((u) => u.ticker === value);
@@ -45,7 +64,7 @@ function inferFnoLotSize(position: Position): number {
     return 1;
   }
   if (position.lot_size && position.lot_size > 1) return position.lot_size;
-  const qty = Math.max(1, Math.floor(position.quantity));
+  const qty = Math.max(1, Math.floor(Math.abs(position.quantity)));
   const matched = COMMON_FNO_LOT_SIZES.find((lot) => qty % lot === 0);
   return matched ?? qty;
 }
@@ -179,6 +198,22 @@ export function HoldingsList() {
       for (const pos of fnoPositions) {
         if (!active) return;
         try {
+          const contractKind = getFnoContractKind(pos.ticker);
+          const maybeUpdate = (ltp: number) => {
+            if (!active || ltp <= 0 || ltp === pos.ltp) return false;
+            if (!shouldAcceptFnoLtp({
+              ticker: pos.ticker,
+              stockName: pos.stockName,
+              avgPrice: pos.avg_price,
+              currentLtp: pos.ltp,
+              candidateLtp: ltp,
+            })) {
+              return false;
+            }
+            flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
+            return true;
+          };
+
           // Try resolving via the FNO resolve endpoint first (handles simplified tickers like NIFTY25300CE)
           const simplified = pos.ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
           const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
@@ -189,20 +224,35 @@ export function HoldingsList() {
               `/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`
             );
             const ltp = Number(q?.ltp);
-            if (active && ltp > 0) {
-              flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
+            if (maybeUpdate(ltp)) {
               continue;
             }
           }
 
-          // Fallback: direct FNO quote endpoint
+          const optionContract = parseFnoOptionContract(pos.ticker, pos.stockName);
+          if (optionContract) {
+            const chainData = await apiGetJson<FnoOptionChainResponse>(
+              `/api/option-chain?exchange=NSE&underlying=${encodeURIComponent(optionContract.underlying)}&expiry_date=${encodeURIComponent(FNO_EXPIRY_DATES[0])}`,
+              { ttlMs: 30_000 }
+            );
+            const rows = chainData?.strikes ?? chainData?.optionChain ?? [];
+            const row = rows.find((entry) => entry.strikePrice === optionContract.strikePrice);
+            const ltp = Number(row?.[optionContract.optionType]?.ltp);
+            if (maybeUpdate(ltp)) {
+              continue;
+            }
+          }
+
+          if (contractKind === "OPT") {
+            continue;
+          }
+
+          // Fallback: direct FNO quote endpoint for futures.
           const q = await apiGetJson<{ ltp?: number }>(
             `/api/fno/quote/${encodeURIComponent(pos.ticker)}`
           );
           const ltp = Number(q?.ltp);
-          if (active && ltp > 0) {
-            flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-          }
+          maybeUpdate(ltp);
         } catch {
           // Ignore individual fetch errors — will retry next cycle
         }

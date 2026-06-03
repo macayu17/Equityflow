@@ -6,6 +6,7 @@ import type { OrderRequest, Position, Transaction, PortfolioSummary, StrategyPer
 import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import type { MarketSegment } from "@/lib/market-hours";
 import { apiGetJson } from "@/services/request-cache";
+import { getFnoContractKind } from "@/lib/fno-pricing";
 
 // External store to sync portfolio state across components
 let listeners: (() => void)[] = [];
@@ -53,6 +54,7 @@ export function usePortfolio() {
       if (segment === "fno") {
         // Resolve simplified ticker (e.g. NIFTY25300CE) to real Groww FNO symbol
         const simplified = ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
+        const contractKind = getFnoContractKind(ticker);
         const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
           `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
         );
@@ -67,7 +69,11 @@ export function usePortfolio() {
             };
           }
         }
-        // Fallback to underlying spot quote
+        if (contractKind === "OPT") {
+          return null;
+        }
+
+        // Fallback to futures/underlying quote. Option orders must not execute at spot/index prices.
         const q = await apiGetJson<{ open?: number; ltp?: number }>(`/api/fno/quote/${ticker}`);
         if (!q) return null;
         return {
