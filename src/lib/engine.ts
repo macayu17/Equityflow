@@ -22,6 +22,7 @@ import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import { getMarketStatus, type MarketSegment } from "@/lib/market-hours";
 import { estimateTradeCharges } from "@/lib/trading-charges";
 import { estimateRequiredMargin, getPortfolioRisk } from "@/lib/risk-engine";
+import { getSafeFnoLtp } from "@/lib/fno-pricing";
 
 // ─── In-Memory Database ─────────────────────────────────────
 interface Database {
@@ -56,6 +57,9 @@ function loadDb(): Database {
         ...t,
         timestamp: new Date(t.timestamp),
       }));
+      parsed.positions = Array.isArray(parsed.positions)
+        ? parsed.positions.map((p: Position) => sanitizeLoadedPosition(p))
+        : [];
       parsed.orders = parsed.orders.map((o: Order) => ({
         ...o,
         timestamp: new Date(o.timestamp),
@@ -73,6 +77,39 @@ function loadDb(): Database {
 function saveDb(db: Database): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+}
+
+function roundLoadedMoney(value: number): number {
+  return parseFloat(value.toFixed(2));
+}
+
+function sanitizeLoadedPosition(position: Position): Position {
+  const safeLtp = getSafeFnoLtp({
+    ticker: position.ticker,
+    stockName: position.stockName,
+    avgPrice: position.avg_price,
+    currentLtp: position.ltp,
+    candidateLtp: position.ltp,
+  });
+
+  if (safeLtp === position.ltp) {
+    return position;
+  }
+
+  const quantity = Number(position.quantity) || 0;
+  const invested = roundLoadedMoney(position.avg_price * quantity);
+  const currentValue = roundLoadedMoney(safeLtp * quantity);
+  const pnl = roundLoadedMoney((safeLtp - position.avg_price) * quantity);
+  const exposure = Math.abs(invested);
+
+  return {
+    ...position,
+    ltp: safeLtp,
+    invested,
+    current_value: currentValue,
+    pnl,
+    pnl_percent: exposure > 0 ? roundLoadedMoney((pnl / exposure) * 100) : 0,
+  };
 }
 
 // ─── Singleton Database Instance ─────────────────────────────

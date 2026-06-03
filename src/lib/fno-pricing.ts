@@ -111,3 +111,23 @@ export function shouldAcceptFnoLtp(input: {
 
   return true;
 }
+
+export function getSafeFnoLtp(input: {
+  ticker: string;
+  stockName?: string;
+  avgPrice?: number;
+  currentLtp?: number;
+  candidateLtp: number;
+}): number {
+  if (shouldAcceptFnoLtp(input)) {
+    return input.candidateLtp;
+  }
+
+  if (typeof input.avgPrice === "number" && Number.isFinite(input.avgPrice) && input.avgPrice > 0) {
+    return input.avgPrice;
+  }
+
+  return typeof input.currentLtp === "number" && Number.isFinite(input.currentLtp) && input.currentLtp > 0
+    ? input.currentLtp
+    : 0;
+}
