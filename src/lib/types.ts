@@ -153,6 +153,7 @@ export interface Position {
   product: ProductType;
   ltp: number;
   lot_size?: number;
+  margin_required?: number;
 }
 
 export interface PortfolioSummary {

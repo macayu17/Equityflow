@@ -290,6 +290,8 @@ export function HoldingsList() {
         const isCommodity = commodityTickers.has(pos.ticker);
         const isFno = isFnoPosition(pos);
         const underlying = isFno ? extractFnoUnderlying(pos) : "";
+        const absQuantity = Math.abs(pos.quantity);
+        const sideLabel = pos.quantity < 0 ? "SHORT" : "LONG";
         const href = isCommodity
           ? `/commodities/${pos.ticker}`
           : isFno
@@ -321,7 +323,8 @@ export function HoldingsList() {
             </div>
 
             <div className="col-span-1 text-right text-[13px] font-semibold text-primary dark:text-primary-dark tabular-nums">
-              {pos.quantity}
+              <span className="block text-[10px] font-bold text-muted dark:text-muted-dark">{sideLabel}</span>
+              {absQuantity}
             </div>
 
             <div className="col-span-2 text-right text-[12px] font-medium text-muted dark:text-gray-400 tabular-nums">

@@ -43,7 +43,7 @@ export function OrderPad({
   defaultLimitPrice,
   defaultTriggerPrice,
 }: OrderPadProps) {
-  const { balance, placeOrder } = usePortfolio();
+  const { balance, positions, placeOrder } = usePortfolio();
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const isFnO = lotSize > 1;
@@ -71,6 +71,16 @@ export function OrderPad({
   const effectivePrice = variety === "MARKET" || variety === "SL-M" ? ltp : limitPrice;
   const totalQuantity = isFnO ? quantity * lotSize : quantity;
   const isBuy = orderType === "BUY";
+  const marginProduct = product === "INTRADAY" || isFnO;
+  const matchingQuantity = positions
+    .filter((position) => position.ticker === ticker && position.product === product)
+    .reduce((sum, position) => sum + position.quantity, 0);
+  const signedDelta = isBuy ? totalQuantity : -totalQuantity;
+  const openingQuantity = marginProduct
+    ? (matchingQuantity === 0 || Math.sign(matchingQuantity) === Math.sign(signedDelta)
+      ? Math.abs(signedDelta)
+      : Math.max(0, Math.abs(signedDelta) - Math.abs(matchingQuantity)))
+    : isBuy ? totalQuantity : 0;
   const charges = estimateTradeCharges({
     type: orderType,
     product,
@@ -86,16 +96,32 @@ export function OrderPad({
     quantity: totalQuantity,
     lotSize,
   });
-  const upfrontDebit = margin.required;
+  const openingMargin = openingQuantity > 0
+    ? estimateRequiredMargin({
+      type: orderType,
+      ticker,
+      product,
+      price: effectivePrice,
+      quantity: openingQuantity,
+      lotSize,
+    })
+    : { ...margin, required: 0, leverage: 0 };
+  const upfrontDebit = marginProduct ? openingMargin.required : isBuy ? margin.required : 0;
   const requiresTrigger = variety === "SL" || variety === "SL-M";
   const hasValidOrder = effectivePrice > 0 && totalQuantity > 0 && (!requiresTrigger || triggerPrice > 0);
+  const insufficientBalance = hasValidOrder && upfrontDebit > 0 && balance < upfrontDebit;
+  const settlementLabel = marginProduct
+    ? openingQuantity > 0 ? "Margin required" : "Closes position"
+    : isBuy ? "Upfront" : "Credit";
+  const settlementValue = marginProduct
+    ? upfrontDebit
+    : isBuy ? upfrontDebit : charges.netAmount;
 
   const handleSubmit = () => {
-    if (!hasValidOrder || (isBuy && balance < upfrontDebit)) {
-      const insufficientFunds = isBuy && hasValidOrder && balance < upfrontDebit;
+    if (!hasValidOrder || insufficientBalance) {
       toast({
-        title: insufficientFunds ? "Insufficient Funds" : "Price Required",
-        description: insufficientFunds
+        title: insufficientBalance ? (marginProduct ? "Insufficient Margin" : "Insufficient Funds") : "Price Required",
+        description: insufficientBalance
           ? `Required ${formatCurrency(upfrontDebit)}, available ${formatCurrency(balance)}.`
           : requiresTrigger ? "Stop-loss orders need a valid trigger price." : "Order entry needs a valid executable price.",
         variant: "error",
@@ -373,9 +399,9 @@ export function OrderPad({
                 </span>
               </div>
               <div className="flex justify-between text-[12px]">
-                <span className="terminal-subtle">{isBuy ? "Upfront" : "Credit"}</span>
+                <span className="terminal-subtle">{settlementLabel}</span>
                 <span className="terminal-number font-semibold text-[var(--terminal-fg)]">
-                  {formatCurrency(isBuy ? upfrontDebit : charges.netAmount)}
+                  {openingQuantity > 0 || !marginProduct ? formatCurrency(settlementValue) : "No new margin"}
                 </span>
               </div>
               {requiresTrigger && (
@@ -384,16 +410,18 @@ export function OrderPad({
                   <span className="terminal-number font-medium text-[var(--terminal-fg)]">{formatCurrency(triggerPrice)}</span>
                 </div>
               )}
-              {margin.leverage > 1 && (
+              {(marginProduct ? openingMargin.leverage : margin.leverage) > 1 && (
                 <div className="terminal-subtle flex justify-between text-[11px]">
                   <span>Margin leverage</span>
-                  <span className="terminal-number font-medium text-[var(--terminal-accent)]">{margin.leverage.toFixed(2)}x</span>
+                  <span className="terminal-number font-medium text-[var(--terminal-accent)]">
+                    {(marginProduct ? openingMargin.leverage : margin.leverage).toFixed(2)}x
+                  </span>
                 </div>
               )}
-              {isBuy && (
+              {(isBuy || upfrontDebit > 0) && (
                 <div className="flex justify-between border-t border-[color:var(--terminal-grid)] pt-1.5 text-[11px]">
                   <span className="terminal-subtle">Available</span>
-                  <span className={cn("terminal-number font-medium", balance >= upfrontDebit ? "text-profit" : "text-loss")}>
+                  <span className={cn("terminal-number font-medium", !insufficientBalance ? "text-profit" : "text-loss")}>
                     {formatCurrency(balance)}
                   </span>
                 </div>

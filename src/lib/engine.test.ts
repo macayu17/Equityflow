@@ -130,6 +130,90 @@ describe("portfolio trading engine", () => {
     });
   });
 
+  it("opens an intraday short without delivery holdings and covers it with a buy", () => {
+    const manager = getPortfolioManager();
+
+    const short = manager.placeOrder(baseOrder({
+      type: "SELL",
+      ticker: "TCS",
+      stockName: "Tata Consultancy Services Ltd",
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    }));
+
+    expect(short.success).toBe(true);
+    expect(short.order).toMatchObject({
+      type: "SELL",
+      product: "INTRADAY",
+      status: "COMPLETED",
+    });
+    expect(manager.getPosition("TCS")).toMatchObject({
+      ticker: "TCS",
+      product: "INTRADAY",
+      quantity: -10,
+      ltp: 100,
+    });
+
+    const cover = manager.placeOrder(baseOrder({
+      type: "BUY",
+      ticker: "TCS",
+      stockName: "Tata Consultancy Services Ltd",
+      product: "INTRADAY",
+      price: 95,
+      market_ltp: 95,
+      quantity: 10,
+    }));
+
+    expect(cover.success).toBe(true);
+    expect(cover.order?.realized_pnl).toBeGreaterThan(45);
+    expect(manager.getPosition("TCS")).toBeUndefined();
+    expect(manager.getPortfolioSummary().realizedPnl).toBeGreaterThan(45);
+  });
+
+  it("still rejects delivery sells when there are no holdings", () => {
+    const manager = getPortfolioManager();
+
+    const result = manager.placeOrder(baseOrder({
+      type: "SELL",
+      ticker: "TCS",
+      stockName: "Tata Consultancy Services Ltd",
+      product: "DELIVERY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    }));
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Insufficient holdings");
+    expect(manager.getPosition("TCS")).toBeUndefined();
+  });
+
+  it("uses execution price instead of margin as intraday long cost basis", () => {
+    const manager = getPortfolioManager();
+
+    const buy = manager.placeOrder(baseOrder({
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    }));
+
+    expect(buy.success).toBe(true);
+    expect(buy.order?.margin_required).toBeGreaterThan(0);
+    expect(manager.getBalance()).toBeCloseTo(100000 - (buy.order?.margin_required ?? 0), 2);
+    expect(manager.getPosition("RELIANCE")).toMatchObject({
+      product: "INTRADAY",
+      quantity: 10,
+      ltp: 100,
+      current_value: 1000,
+    });
+    expect(manager.getPosition("RELIANCE")?.avg_price).toBeGreaterThan(99);
+    expect(manager.getPosition("RELIANCE")?.avg_price).toBeLessThan(101);
+    expect(manager.getPosition("RELIANCE")?.pnl).toBeLessThanOrEqual(0);
+  });
+
   it("rejects F&O orders that are not in whole lots", () => {
     const manager = getPortfolioManager();
 

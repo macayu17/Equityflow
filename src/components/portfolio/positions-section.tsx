@@ -84,7 +84,9 @@ function PositionCard({ position, flash, onExit, onBuy, onSell, type }: Position
         ? `/fno?underlying=${encodeURIComponent(underlying)}&contract=${encodeURIComponent(pos.ticker)}`
         : `/stocks/${pos.ticker}`;
     const lots = type === "fno" ? inferFnoLotSize(pos) : 1;
-    const numLots = lots > 1 ? Math.floor(pos.quantity / lots) : pos.quantity;
+    const absQuantity = Math.abs(pos.quantity);
+    const numLots = lots > 1 ? Math.floor(absQuantity / lots) : absQuantity;
+    const sideLabel = pos.quantity < 0 ? "SHORT" : "LONG";
 
     return (
         <div className="flex items-center gap-3 px-4 py-3 border-b last:border-b-0 border-border/20 dark:border-border-dark/20 hover:bg-surface/50 dark:hover:bg-white/[0.02] transition-colors group">
@@ -100,7 +102,7 @@ function PositionCard({ position, flash, onExit, onBuy, onSell, type }: Position
                             {numLots} LOT{numLots > 1 ? "S" : ""}
                         </span>
                     )}
-                    <span>{pos.quantity} qty</span>
+                    <span>{sideLabel} {absQuantity} qty</span>
                     <span>·</span>
                     <span className="tabular-nums">Avg {formatCurrency(pos.avg_price)}</span>
                 </div>

@@ -117,10 +117,29 @@ export function estimatePositionMargin(position: Position): number {
   return margin.required;
 }
 
+function isMarginPosition(position: Position): boolean {
+  const segment = inferTradingSegment(position.ticker);
+  return position.product === "INTRADAY" || segment === "fno" || segment === "commodity";
+}
+
+function getBlockedPositionMargin(position: Position): number {
+  if (typeof position.margin_required === "number" && Number.isFinite(position.margin_required)) {
+    return position.margin_required;
+  }
+  return estimatePositionMargin(position);
+}
+
 export function getPortfolioRisk(input: { balance: number; positions: Position[] }): PortfolioRiskSummary {
   const grossExposure = input.positions.reduce((sum, position) => sum + Math.abs(position.current_value), 0);
-  const marginUsed = input.positions.reduce((sum, position) => sum + estimatePositionMargin(position), 0);
-  const equity = input.balance + input.positions.reduce((sum, position) => sum + position.current_value, 0);
+  const marginUsed = input.positions.reduce((sum, position) => {
+    return sum + (isMarginPosition(position) ? getBlockedPositionMargin(position) : estimatePositionMargin(position));
+  }, 0);
+  const equity = input.balance + input.positions.reduce((sum, position) => {
+    if (isMarginPosition(position)) {
+      return sum + getBlockedPositionMargin(position) + position.pnl;
+    }
+    return sum + position.current_value;
+  }, 0);
   const marginAvailable = Math.max(0, equity - marginUsed);
   const leverage = equity > 0 ? grossExposure / equity : 0;
   const concentration = [...input.positions]
