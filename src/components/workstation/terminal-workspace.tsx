@@ -247,7 +247,7 @@ function CommodityStrip() {
   );
 }
 
-function FnoMiniChain({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
+function FnoMiniChain() {
   return (
     <section className="terminal-panel overflow-hidden">
       <div className="terminal-panel-header">
@@ -268,13 +268,12 @@ function FnoMiniChain({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
           </Link>
           <span className="terminal-muted truncate">{underlying.name}</span>
           <span className="terminal-number terminal-fg text-right">{formatCurrency(underlying.ltp)}</span>
-          <button
-            type="button"
-            className="terminal-action h-6 px-1.5 text-[10px]"
-            onClick={() => onTrade({ ticker: underlying.ticker, name: underlying.name, ltp: underlying.ltp, type: "BUY", lotSize: underlying.lotSize })}
+          <Link
+            href={`/fno?underlying=${underlying.ticker}`}
+            className="terminal-action flex h-6 items-center justify-center px-1.5 text-[10px]"
           >
-            Trade
-          </button>
+            Chain
+          </Link>
         </div>
       ))}
     </section>
@@ -355,7 +354,7 @@ function DenseCommandCenter({ onTrade }: { onTrade: (draft: OrderDraft) => void 
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        <FnoMiniChain onTrade={onTrade} />
+        <FnoMiniChain />
         <CommodityStrip />
       </div>
     </div>
@@ -371,7 +370,7 @@ function ClassicBrokerage({ onTrade }: { onTrade: (draft: OrderDraft) => void })
         <PortfolioRail />
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <FnoMiniChain onTrade={onTrade} />
+        <FnoMiniChain />
         <CommodityStrip />
       </div>
     </div>
@@ -686,7 +685,7 @@ function PowerUserTabs({ onTrade }: { onTrade: (draft: OrderDraft) => void }) {
     if (activeTab === "Replay") return <ReplayLab />;
     if (activeTab === "Portfolio") return <PortfolioRail />;
     if (activeTab === "Orders") return <ClassicBrokerage onTrade={onTrade} />;
-    if (activeTab === "NIFTY") return <FnoMiniChain onTrade={onTrade} />;
+    if (activeTab === "NIFTY") return <FnoMiniChain />;
   }, [activeTab, charts, onTrade, syncTimeframe, timeframe]);
 
   return (

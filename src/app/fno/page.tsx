@@ -22,6 +22,7 @@ type FutureRow = {
   openInterest: number;
   volume: number;
   lotSize: number;
+  tradable: boolean;
 };
 
 export default function FnoPage() {
@@ -67,10 +68,13 @@ function FnoPageContent() {
   // Calculate change from live quote or show 0 (no random jitter)
   const spotChange = quote ? quote.change : 0;
   const spotChangePercent = quote ? quote.changePercent : 0;
+  const hasProviderOptionChain = Array.isArray(optionChain?.strikes)
+    && optionChain.strikes.length > 0
+    && optionChain.source !== "mock";
 
   const optionChainRows = useMemo(() => {
     const strikes = optionChain?.strikes;
-    const rows = Array.isArray(strikes) && strikes.length > 0
+    const rows = hasProviderOptionChain
       ? strikes
       : generateMockOptionChain(underlying.ticker, spotPrice, underlying.lotSize);
 
@@ -100,6 +104,7 @@ function FnoPageContent() {
             expiryDate: new Date(expiry),
             lotSize: Number(ce.lotSize || underlying.lotSize),
             ltp: Number(ce.ltp || 0),
+            tradable: hasProviderOptionChain && Number(ce.ltp || 0) > 0,
             change: Number(ce.change || 0),
             changePercent: Number(ce.changePct ?? ce.changePercent ?? 0),
             openInterest: Number(ce.openInterest || 0),
@@ -120,6 +125,7 @@ function FnoPageContent() {
             expiryDate: new Date(expiry),
             lotSize: Number(pe.lotSize || underlying.lotSize),
             ltp: Number(pe.ltp || 0),
+            tradable: hasProviderOptionChain && Number(pe.ltp || 0) > 0,
             change: Number(pe.change || 0),
             changePercent: Number(pe.changePct ?? pe.changePercent ?? 0),
             openInterest: Number(pe.openInterest || 0),
@@ -136,7 +142,7 @@ function FnoPageContent() {
     }
 
     return [];
-  }, [optionChain, underlying.ticker, underlying.lotSize, spotPrice, expiry]);
+  }, [optionChain, hasProviderOptionChain, underlying.ticker, underlying.lotSize, spotPrice, expiry]);
 
   const optionProMetrics = useMemo(() => {
     const rows = optionChainRows;
@@ -187,6 +193,7 @@ function FnoPageContent() {
         openInterest: fut.openInterest,
         volume: fut.volume,
         lotSize: fut.lotSize,
+        tradable: false,
       };
     });
   }, [underlying.ticker, underlying.name, underlying.lotSize, spotPrice, spotChange, quote]);
@@ -372,8 +379,13 @@ function FnoPageContent() {
           </div>
 
           {/* Option Chain Table */}
+          {!hasProviderOptionChain && (
+            <div className="terminal-panel border-amber-400/30 bg-amber-400/5 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-amber-300">
+              Simulated option chain shown for context. Trading is disabled until live provider data is available.
+            </div>
+          )}
         <div className="terminal-panel overflow-x-auto">
-            <table className="w-full text-[11px]">
+            <table className="min-w-[900px] w-full text-[11px]">
               <thead>
                 <tr className="border-b border-border dark:border-border-dark bg-surface/50 dark:bg-elevated-dark/50">
                   <th className="px-1 py-2"></th>
@@ -426,16 +438,20 @@ function FnoPageContent() {
                     >
                       {/* Call trade buttons */}
                       <td className="px-1 py-1">
-                        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex gap-0.5">
                           <button
+                            aria-label={`Buy ${ceLabel}`}
+                            disabled={!row.ce.tradable}
                             onClick={() => openFnoOrder(row.ce.ticker, ceLabel, row.ce.ltp, "BUY", row.ce.lotSize)}
-                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-profit/10 text-profit hover:bg-profit/20 transition-colors"
+                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-profit/10 text-profit hover:bg-profit/20 transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                           >
                             B
                           </button>
                           <button
+                            aria-label={`Sell ${ceLabel}`}
+                            disabled={!row.ce.tradable}
                             onClick={() => openFnoOrder(row.ce.ticker, ceLabel, row.ce.ltp, "SELL", row.ce.lotSize)}
-                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-loss/10 text-loss hover:bg-loss/20 transition-colors"
+                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-loss/10 text-loss hover:bg-loss/20 transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                           >
                             S
                           </button>
@@ -490,16 +506,20 @@ function FnoPageContent() {
 
                       {/* Put trade buttons */}
                       <td className="px-1 py-1">
-                        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex gap-0.5">
                           <button
+                            aria-label={`Buy ${peLabel}`}
+                            disabled={!row.pe.tradable}
                             onClick={() => openFnoOrder(row.pe.ticker, peLabel, row.pe.ltp, "BUY", row.pe.lotSize)}
-                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-profit/10 text-profit hover:bg-profit/20 transition-colors"
+                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-profit/10 text-profit hover:bg-profit/20 transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                           >
                             B
                           </button>
                           <button
+                            aria-label={`Sell ${peLabel}`}
+                            disabled={!row.pe.tradable}
                             onClick={() => openFnoOrder(row.pe.ticker, peLabel, row.pe.ltp, "SELL", row.pe.lotSize)}
-                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-loss/10 text-loss hover:bg-loss/20 transition-colors"
+                            className="px-1 py-0.5 text-[9px] font-bold rounded bg-loss/10 text-loss hover:bg-loss/20 transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                           >
                             S
                           </button>
@@ -561,14 +581,18 @@ function FnoPageContent() {
                 </div>
                 <div className="flex justify-center gap-1.5">
                   <button
+                    disabled={!fut.tradable}
+                    title="Live future quote required"
                     onClick={() => openFnoOrder(fut.ticker, futLabel, fut.ltp, "BUY", fut.lotSize)}
-                    className="px-2 py-1 text-[10px] font-bold rounded bg-profit/10 text-profit hover:bg-profit hover:text-white transition-colors"
+                    className="px-2 py-1 text-[10px] font-bold rounded bg-profit/10 text-profit hover:bg-profit hover:text-white transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                   >
                     BUY
                   </button>
                   <button
+                    disabled={!fut.tradable}
+                    title="Live future quote required"
                     onClick={() => openFnoOrder(fut.ticker, futLabel, fut.ltp, "SELL", fut.lotSize)}
-                    className="px-2 py-1 text-[10px] font-bold rounded bg-loss/10 text-loss hover:bg-loss hover:text-white transition-colors"
+                    className="px-2 py-1 text-[10px] font-bold rounded bg-loss/10 text-loss hover:bg-loss hover:text-white transition-colors disabled:cursor-not-allowed disabled:opacity-35"
                   >
                     SELL
                   </button>

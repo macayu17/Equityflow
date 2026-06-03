@@ -39,6 +39,16 @@ describe("F&O pricing helpers", () => {
     })).toBe(true);
   });
 
+  it("rejects spot-sized LTPs for far OTM stock options even below half the strike", () => {
+    expect(shouldAcceptFnoLtp({
+      ticker: "RELIANCE3000CE",
+      stockName: "RELIANCE 3000 CE",
+      avgPrice: 12,
+      currentLtp: 12,
+      candidateLtp: 1450,
+    })).toBe(false);
+  });
+
   it("falls back to average premium for already-stored bad option LTPs", () => {
     expect(getSafeFnoLtp({
       ticker: "NIFTY25450CE",

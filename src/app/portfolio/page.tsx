@@ -14,17 +14,7 @@ import { useToast } from "@/components/toast-provider";
 import { apiGetJson } from "@/services/request-cache";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
 import { shouldAcceptFnoLtp } from "@/lib/fno-pricing";
-
-function isFnoContractTicker(ticker: string): boolean {
-  const symbol = ticker.toUpperCase();
-  const isFuture = symbol.endsWith("FUT");
-  const isOption = (symbol.endsWith("CE") || symbol.endsWith("PE")) && /\d/.test(symbol);
-  return isFuture || isOption;
-}
-
-function isFnoPosition(position: Position): boolean {
-  return isFnoContractTicker(position.ticker) || isFnoContractTicker(position.stockName || "");
-}
+import { isDeliveryHoldingPosition, isFnoPosition } from "@/lib/position-classification";
 
 export default function PortfolioPage() {
   const { resetAccount, positions, updateLTP, summary, balance, risk, orders } = usePortfolio();
@@ -38,9 +28,13 @@ export default function PortfolioPage() {
     () => positions.filter((position) => isFnoPosition(position)),
     [positions]
   );
+  const deliveryHoldings = useMemo(
+    () => positions.filter(isDeliveryHoldingPosition),
+    [positions]
+  );
   const pendingOrders = useMemo(() => orders.filter((order) => order.status === "PENDING" || order.status === "PARTIAL").length, [orders]);
-  const netWorth = balance + summary.currentValue;
-  const exposure = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
+  const accountEquity = risk.marginAvailable + risk.marginUsed;
+  const exposure = accountEquity > 0 ? (risk.grossExposure / accountEquity) * 100 : 0;
   const pageActions = [
     { href: "/stocks", label: "Find Stocks", meta: "Equity watchlist", icon: Search },
     { href: "/fno", label: "Option Chain", meta: "Calls, puts, futures", icon: CandlestickChart },
@@ -154,13 +148,13 @@ export default function PortfolioPage() {
           </div>
           <div className="ml-[42px] flex flex-wrap items-center gap-2">
             <span className="terminal-badge rounded-sm px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]">
-              Net {formatCurrency(netWorth)}
+              Equity {formatCurrency(accountEquity)}
             </span>
             <span className={cn("rounded-sm border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]", getPriceChangeColor(summary.netPnl))}>
               P&L {summary.netPnl >= 0 ? "+" : ""}{formatCurrency(summary.netPnl)} ({formatPercentage(summary.totalInvested > 0 ? (summary.netPnl / summary.totalInvested) * 100 : 0)})
             </span>
             <span className="terminal-subtle font-mono text-[10px] uppercase tracking-[0.1em]">
-              {positions.length} holdings · {pendingOrders} open orders · {exposure.toFixed(2)}% deployed
+              {positions.length} positions · {deliveryHoldings.length} holdings · {pendingOrders} open orders · {exposure.toFixed(2)}% deployed
             </span>
             <span className={cn("rounded-sm border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.1em]", risk.riskScore > 65 ? "border-loss/30 text-loss" : risk.riskScore > 35 ? "border-warning/30 text-warning" : "border-info/30 text-info")}>
               Risk {risk.riskScore}/100 · Margin {formatCurrency(risk.marginUsed)}
@@ -201,7 +195,7 @@ export default function PortfolioPage() {
           <h2 className="terminal-title">Holdings</h2>
           <span className="terminal-subtle flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em]">
             <Activity size={11} />
-            {positions.length} active
+            {deliveryHoldings.length} delivery
           </span>
         </div>
         <HoldingsList />

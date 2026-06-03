@@ -38,6 +38,20 @@ describe("risk engine", () => {
     expect(margin.leverage).toBeGreaterThan(1);
   });
 
+  it("classifies commodity futures as commodity even when they have lot sizes", () => {
+    const margin = estimateRequiredMargin({
+      type: "BUY",
+      ticker: "CRUDEOIL19FEB26FUT",
+      product: "INTRADAY",
+      price: 5902,
+      quantity: 100,
+      lotSize: 100,
+    });
+
+    expect(margin.segment).toBe("commodity");
+    expect(margin.required).toBeCloseTo(margin.notional * 0.12 + margin.charges, 2);
+  });
+
   it("computes portfolio exposure, margin and warning bands", () => {
     const risk = getPortfolioRisk({
       balance: 50_000,

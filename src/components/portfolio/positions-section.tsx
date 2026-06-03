@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
-import { MOCK_COMMODITIES, FNO_UNDERLYINGS, FNO_EXPIRY_DATES } from "@/lib/constants";
+import { MOCK_COMMODITIES, FNO_UNDERLYINGS } from "@/lib/constants";
 import { ArrowUpRight, ArrowDownRight, X, Zap, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { OrderPad } from "@/components/trading/order-pad";
@@ -11,31 +11,8 @@ import { StockLogo } from "@/components/market/stock-logo";
 import { useToast } from "@/components/toast-provider";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
 import type { OrderType, Position } from "@/lib/types";
-import { apiGetJson } from "@/services/request-cache";
-import { getFnoContractKind, parseFnoOptionContract, shouldAcceptFnoLtp } from "@/lib/fno-pricing";
-
-interface FnoOptionChainEntry {
-    strikePrice: number;
-    CE?: {
-        ltp?: number;
-    };
-    PE?: {
-        ltp?: number;
-    };
-}
-
-interface FnoOptionChainResponse {
-    optionChain?: FnoOptionChainEntry[];
-    strikes?: FnoOptionChainEntry[];
-}
-
-function isFnoContractTicker(ticker: string): boolean {
-    return getFnoContractKind(ticker) !== null;
-}
-
-function isFnoPosition(position: Position): boolean {
-    return isFnoContractTicker(position.ticker) || isFnoContractTicker(position.stockName || "");
-}
+import { parseFnoOptionContract } from "@/lib/fno-pricing";
+import { isFnoPosition } from "@/lib/position-classification";
 
 function isIntradayPosition(position: Position): boolean {
     return position.product === "INTRADAY" && !isFnoPosition(position);
@@ -61,7 +38,7 @@ function extractFnoUnderlying(position: Position): string {
 
 const COMMON_FNO_LOT_SIZES = [5500, 1600, 1100, 900, 750, 700, 550, 400, 350, 250, 175, 125, 100, 75, 65, 50, 30, 25, 20, 15];
 function inferFnoLotSize(position: Position): number {
-    if (!isFnoContractTicker(position.ticker)) return 1;
+    if (!isFnoPosition(position)) return 1;
     if (position.lot_size && position.lot_size > 1) return position.lot_size;
     const qty = Math.max(1, Math.floor(Math.abs(position.quantity)));
     const matched = COMMON_FNO_LOT_SIZES.find((lot) => qty % lot === 0);
@@ -197,86 +174,6 @@ export function PositionsSection() {
             flashAndUpdate(pos.id, pos.ticker, live, pos.ltp);
         }
     }, [intradayPositions, prices, commodities, flashAndUpdate, commodityTickers]);
-
-    // Polling-based price sync for F&O positions
-    useEffect(() => {
-        if (fnoPositions.length === 0) return;
-        let active = true;
-
-        const fetchFnoPrices = async () => {
-            for (const pos of fnoPositions) {
-                if (!active) return;
-                try {
-                    const contractKind = getFnoContractKind(pos.ticker);
-                    const maybeUpdate = (ltp: number) => {
-                        if (!active || ltp <= 0 || ltp === pos.ltp) return false;
-                        if (!shouldAcceptFnoLtp({
-                            ticker: pos.ticker,
-                            stockName: pos.stockName,
-                            avgPrice: pos.avg_price,
-                            currentLtp: pos.ltp,
-                            candidateLtp: ltp,
-                        })) {
-                            return false;
-                        }
-                        flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-                        return true;
-                    };
-
-                    const simplified = pos.ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-                    const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
-                        `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
-                    );
-                    if (resolveData?.resolved && resolveData.tradingSymbol) {
-                        const q = await apiGetJson<{ ltp?: number }>(
-                            `/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`
-                        );
-                        const ltp = Number(q?.ltp);
-                        if (maybeUpdate(ltp)) {
-                            continue;
-                        }
-                    }
-                    // Fallback to option chain lookup
-                    const optionContract = parseFnoOptionContract(pos.ticker, pos.stockName);
-                    if (optionContract) {
-                        const chainData = await apiGetJson<FnoOptionChainResponse>(
-                            `/api/option-chain?exchange=NSE&underlying=${encodeURIComponent(optionContract.underlying)}&expiry_date=${encodeURIComponent(FNO_EXPIRY_DATES[0])}`,
-                            { ttlMs: 30_000 }
-                        );
-                        if (chainData) {
-                            const rows = chainData.strikes ?? chainData.optionChain ?? [];
-                            const row = rows.find((entry) => entry.strikePrice === optionContract.strikePrice);
-                            const side = row?.[optionContract.optionType];
-                            if (side) {
-                                const ltp = Number(side.ltp);
-                                if (maybeUpdate(ltp)) {
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    if (contractKind === "OPT") {
-                        continue;
-                    }
-
-                    // Final fallback to quote API (mostly for futures)
-                    const q = await apiGetJson<{ ltp?: number }>(
-                        `/api/fno/quote/${encodeURIComponent(pos.ticker)}`
-                    );
-                    const ltp = Number(q?.ltp);
-                    maybeUpdate(ltp);
-                } catch {
-                    // ignore
-                }
-            }
-        };
-
-        fetchFnoPrices();
-        const interval = setInterval(fetchFnoPrices, 15_000);
-        return () => { active = false; clearInterval(interval); };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fnoPositions.map(p => p.id).join(","), flashAndUpdate]);
 
     useEffect(() => {
         return () => {

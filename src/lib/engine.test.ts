@@ -80,7 +80,8 @@ describe("portfolio trading engine", () => {
       quantity: 6,
       avg_price: 100.12,
       invested: 600.72,
-      current_value: 600,
+      ltp: 110,
+      current_value: 660,
     });
     expect(manager.getBalance()).toBeCloseTo(beforeSellBalance + 439.54, 2);
     expect(sell.order?.charges).toBe(0.46);
@@ -122,12 +123,43 @@ describe("portfolio trading engine", () => {
       quantity: 6,
       avg_price: 100.12,
       invested: 600.72,
-      current_value: 600,
+      ltp: 125,
+      current_value: 750,
+      pnl: 149.28,
     });
     expect(manager.getPortfolioSummary()).toMatchObject({
       realizedPnl: 99,
-      totalPnl: -0.72,
+      totalPnl: 149.28,
     });
+  });
+
+  it("stores per-fill realized pnl so partial exits are not counted twice", async () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({ price: 100, market_ltp: 100, quantity: 10 })).success).toBe(true);
+    const sell = manager.placeOrder(baseOrder({
+      type: "SELL",
+      price: 125,
+      market_ltp: 120,
+      quantity: 4,
+      variety: "LIMIT",
+    }));
+
+    expect(sell.success).toBe(true);
+    expect(sell.order?.status).toBe("PENDING");
+
+    await manager.processPendingOrders(async () => ({ openPrice: 125, ltp: 125, availableQuantity: 2 }));
+    await manager.processPendingOrders(async () => ({ openPrice: 125, ltp: 125, availableQuantity: 2 }));
+
+    const finalOrder = manager.getOrders().find((order) => order.type === "SELL" && order.ticker === "RELIANCE");
+    const realizedTransactions = manager.getTransactions()
+      .filter((transaction) => transaction.type === "SELL" && transaction.ticker === "RELIANCE");
+    const transactionRealized = realizedTransactions.reduce((sum, transaction) => sum + (transaction.realized_pnl ?? 0), 0);
+
+    expect(realizedTransactions).toHaveLength(2);
+    expect(finalOrder?.realized_pnl).toBeGreaterThan(0);
+    expect(transactionRealized).toBeCloseTo(finalOrder?.realized_pnl ?? 0, 2);
+    expect(manager.getPortfolioSummary().realizedPnl).toBeCloseTo(finalOrder?.realized_pnl ?? 0, 2);
   });
 
   it("opens an intraday short without delivery holdings and covers it with a buy", () => {
@@ -279,6 +311,30 @@ describe("portfolio trading engine", () => {
     });
   });
 
+  it("executes triggered stop-market exits at the trigger LTP, not the session open", async () => {
+    const manager = getPortfolioManager();
+    manager.placeOrder(baseOrder({ price: 100, market_ltp: 100, quantity: 10 }));
+
+    const stop = manager.placeOrder(baseOrder({
+      type: "SELL",
+      price: 98,
+      trigger_price: 96,
+      market_ltp: 100,
+      quantity: 5,
+      variety: "SL-M",
+    }));
+
+    expect(stop.success).toBe(true);
+
+    const triggered = await manager.processPendingOrders(async () => ({ openPrice: 100, ltp: 95 }));
+
+    expect(triggered.executed).toBe(1);
+    expect(manager.getOrders()[0]).toMatchObject({
+      status: "COMPLETED",
+      executed_price: 95,
+    });
+  });
+
   it("records partial fills and leaves remaining quantity open", async () => {
     const manager = getPortfolioManager();
 
@@ -305,6 +361,137 @@ describe("portfolio trading engine", () => {
       remaining_quantity: 6,
     });
     expect(manager.getPosition("RELIANCE")?.quantity).toBe(4);
+  });
+
+  it("does not fill F&O pending orders below one whole lot", async () => {
+    const manager = getPortfolioManager();
+
+    const order = manager.placeOrder(baseOrder({
+      ticker: "NIFTY261225300CE",
+      stockName: "NIFTY 25300 CE",
+      product: "INTRADAY",
+      price: 99,
+      market_ltp: 105,
+      quantity: 65,
+      variety: "LIMIT",
+      lot_size: 65,
+    }));
+
+    expect(order.success).toBe(true);
+    expect(order.order?.status).toBe("PENDING");
+
+    const firstPass = await manager.processPendingOrders(async () => ({
+      openPrice: 99,
+      ltp: 99,
+      availableQuantity: 1,
+    }));
+
+    expect(firstPass.executed).toBe(0);
+    expect(manager.getOrders()[0]).toMatchObject({
+      status: "PENDING",
+      filled_quantity: 0,
+      remaining_quantity: 65,
+    });
+    expect(manager.getPosition("NIFTY261225300CE")).toBeUndefined();
+  });
+
+  it("does not execute pending option exits on underlying-sized quote candidates", async () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({
+      ticker: "NIFTY25450CE",
+      stockName: "NIFTY 25450 CE",
+      product: "INTRADAY",
+      price: 14.12,
+      market_ltp: 14.12,
+      quantity: 65,
+      lot_size: 65,
+    })).success).toBe(true);
+
+    const exit = manager.placeOrder(baseOrder({
+      type: "SELL",
+      ticker: "NIFTY25450CE",
+      stockName: "NIFTY 25450 CE",
+      product: "INTRADAY",
+      price: 15,
+      market_ltp: 14.12,
+      quantity: 65,
+      variety: "LIMIT",
+      lot_size: 65,
+    }));
+
+    expect(exit.success).toBe(true);
+    expect(exit.order?.status).toBe("PENDING");
+
+    const result = await manager.processPendingOrders(async () => ({
+      openPrice: 25471.1,
+      ltp: 25471.1,
+      availableQuantity: 65,
+    }));
+
+    expect(result.executed).toBe(0);
+    expect(manager.getPosition("NIFTY25450CE")).toMatchObject({
+      quantity: 65,
+      ltp: 14.12,
+    });
+    expect(manager.getPortfolioSummary().realizedPnl).toBe(0);
+  });
+
+  it("keeps executed totals intact when modifying a partially filled order", async () => {
+    const manager = getPortfolioManager();
+
+    const order = manager.placeOrder(baseOrder({
+      price: 99,
+      market_ltp: 105,
+      quantity: 10,
+      variety: "LIMIT",
+    }));
+
+    expect(order.success).toBe(true);
+    await manager.processPendingOrders(async () => ({ openPrice: 99, ltp: 99, availableQuantity: 4 }));
+
+    const modified = manager.modifyOrder(order.order!.id, { price: 98 });
+    expect(modified.success).toBe(true);
+
+    await manager.processPendingOrders(async () => ({ openPrice: 98, ltp: 98, availableQuantity: 6 }));
+
+    const finalOrder = manager.getOrders()[0];
+    const transactions = manager.getTransactions().filter((transaction) => transaction.type === "BUY" && transaction.ticker === "RELIANCE");
+    const transactionCharges = transactions.reduce((sum, transaction) => sum + (transaction.charges ?? 0), 0);
+    const transactionGross = transactions.reduce((sum, transaction) => sum + (transaction.gross_total ?? 0), 0);
+    const transactionNet = transactions.reduce((sum, transaction) => sum + (transaction.net_total ?? 0), 0);
+
+    expect(finalOrder.status).toBe("COMPLETED");
+    expect(transactions).toHaveLength(2);
+    expect(finalOrder.charges).toBeCloseTo(transactionCharges, 2);
+    expect(finalOrder.gross_total).toBeCloseTo(transactionGross, 2);
+    expect(finalOrder.net_total).toBeCloseTo(transactionNet, 2);
+  });
+
+  it("refunds reserved margin when cancelling queued opening sell orders", () => {
+    const manager = getPortfolioManager();
+    const startingBalance = manager.getBalance();
+
+    const order = manager.placeOrder(baseOrder({
+      type: "SELL",
+      ticker: "TCS",
+      stockName: "Tata Consultancy Services Ltd",
+      product: "INTRADAY",
+      price: 110,
+      market_ltp: 100,
+      quantity: 10,
+      variety: "LIMIT",
+    }));
+
+    expect(order.success).toBe(true);
+    expect(order.order?.status).toBe("PENDING");
+    expect(manager.getBalance()).toBeLessThan(startingBalance);
+
+    const cancelled = manager.cancelOrder(order.order!.id);
+
+    expect(cancelled.success).toBe(true);
+    expect(manager.getBalance()).toBeCloseTo(startingBalance, 2);
+    expect(cancelled.order?.reserved_amount).toBe(0);
   });
 
   it("exposes margin and risk metrics for F&O orders and portfolio", () => {

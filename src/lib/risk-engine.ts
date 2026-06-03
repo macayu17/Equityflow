@@ -54,11 +54,11 @@ function round(value: number) {
 
 export function inferTradingSegment(ticker: string): "equity" | "fno" | "commodity" {
   const symbol = ticker.toUpperCase();
-  if (symbol.endsWith("FUT") || ((symbol.endsWith("CE") || symbol.endsWith("PE")) && /\d/.test(symbol))) {
-    return "fno";
-  }
   if (/CRUDE|GOLD|SILVER|COPPER|ZINC|ALUM|NATGAS|NATURALGAS|ELECTRICITY/.test(symbol)) {
     return "commodity";
+  }
+  if (symbol.endsWith("FUT") || ((symbol.endsWith("CE") || symbol.endsWith("PE")) && /\d/.test(symbol))) {
+    return "fno";
   }
   return "equity";
 }
@@ -73,7 +73,8 @@ export function isFutureTicker(ticker: string) {
 }
 
 export function estimateRequiredMargin(input: MarginInput): MarginEstimate {
-  const segment = input.lotSize && input.lotSize > 1 ? "fno" : inferTradingSegment(input.ticker);
+  const inferredSegment = inferTradingSegment(input.ticker);
+  const segment = input.lotSize && input.lotSize > 1 && inferredSegment !== "commodity" ? "fno" : inferredSegment;
   const notional = Math.max(0, input.price) * Math.max(0, input.quantity);
   const charges = estimateTradeCharges({
     type: input.type,

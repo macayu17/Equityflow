@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
-import { MOCK_COMMODITIES, FNO_UNDERLYINGS, FNO_EXPIRY_DATES } from "@/lib/constants";
+import { MOCK_COMMODITIES } from "@/lib/constants";
 import { Briefcase, ArrowUpRight, ArrowDownRight, CandlestickChart, Search, WalletCards } from "lucide-react";
 import Link from "next/link";
 import { OrderPad } from "@/components/trading/order-pad";
@@ -11,74 +11,18 @@ import { StockLogo } from "@/components/market/stock-logo";
 import { useToast } from "@/components/toast-provider";
 import { useAllStreamPrices } from "@/hooks/usePriceStream";
 import type { OrderType, Position } from "@/lib/types";
-import { apiGetJson } from "@/services/request-cache";
-import { getFnoContractKind, parseFnoOptionContract, shouldAcceptFnoLtp } from "@/lib/fno-pricing";
-
-interface FnoOptionChainEntry {
-  strikePrice: number;
-  CE?: {
-    ltp?: number;
-  };
-  PE?: {
-    ltp?: number;
-  };
-}
-
-interface FnoOptionChainResponse {
-  optionChain?: FnoOptionChainEntry[];
-  strikes?: FnoOptionChainEntry[];
-}
-
-const COMMON_FNO_LOT_SIZES = [5500, 1600, 1100, 900, 750, 700, 550, 400, 350, 250, 175, 125, 100, 75, 65, 50, 30, 25, 20, 15];
-function isFnoPosition(position: Position): boolean {
-  return getFnoContractKind(position.ticker) !== null || getFnoContractKind(position.stockName || "") !== null;
-}
-
-function extractFnoUnderlying(position: Position): string {
-  const optionContract = parseFnoOptionContract(position.ticker, position.stockName);
-  if (optionContract) return optionContract.underlying;
-
-  const ticker = position.ticker.toUpperCase();
-  const stockName = (position.stockName || "").toUpperCase();
-  const hasUnderlying = (value: string) => FNO_UNDERLYINGS.some((u) => u.ticker === value);
-
-  const tickerPrefixed = ticker.match(/^([A-Z]+)\d+(CE|PE)$/);
-  if (tickerPrefixed?.[1] && hasUnderlying(tickerPrefixed[1])) {
-    return tickerPrefixed[1];
-  }
-
-  const futPrefixed = ticker.match(/^([A-Z]+)FUT$/);
-  if (futPrefixed?.[1] && hasUnderlying(futPrefixed[1])) {
-    return futPrefixed[1];
-  }
-
-  for (const underlying of FNO_UNDERLYINGS) {
-    if (stockName.includes(underlying.ticker)) return underlying.ticker;
-  }
-
-  return "NIFTY";
-}
-
-function inferFnoLotSize(position: Position): number {
-  if (!position.ticker.includes("CE") && !position.ticker.includes("PE") && !position.ticker.includes("FUT")) {
-    return 1;
-  }
-  if (position.lot_size && position.lot_size > 1) return position.lot_size;
-  const qty = Math.max(1, Math.floor(Math.abs(position.quantity)));
-  const matched = COMMON_FNO_LOT_SIZES.find((lot) => qty % lot === 0);
-  return matched ?? qty;
-}
+import { isDeliveryHoldingPosition } from "@/lib/position-classification";
 
 export function PortfolioSummaryCard() {
   const { summary, balance, risk } = usePortfolio();
-  const netWorth = balance + summary.currentValue;
-  const deployedPercent = netWorth > 0 ? (summary.currentValue / netWorth) * 100 : 0;
+  const accountEquity = risk.marginAvailable + risk.marginUsed;
+  const deployedPercent = accountEquity > 0 ? (risk.grossExposure / accountEquity) * 100 : 0;
   const cashPercent = Math.max(0, 100 - deployedPercent);
   const netPnlPercent = summary.totalInvested > 0 ? (summary.netPnl / summary.totalInvested) * 100 : 0;
 
   const cards = [
     { label: "Invested", value: summary.totalInvested, color: "terminal-fg" },
-    { label: "Current Value", value: summary.currentValue, color: "terminal-fg" },
+    { label: "Gross Exposure", value: risk.grossExposure, color: "terminal-fg" },
     { label: "Net P&L", value: summary.netPnl, pct: netPnlPercent, dynamic: true },
     { label: "Margin Used", value: risk.marginUsed, color: "text-info" },
     { label: "Day Returns", value: summary.dayPnl, pct: summary.dayPnlPercent, dynamic: true },
@@ -113,7 +57,7 @@ export function PortfolioSummaryCard() {
               />
             </div>
             <div className="terminal-subtle mt-2 font-mono text-[10px] uppercase tracking-[0.1em]">
-              Net liquidation {formatCurrency(netWorth)}
+              Account equity {formatCurrency(accountEquity)}
             </div>
           </div>
         </div>
@@ -150,6 +94,7 @@ export function HoldingsList() {
   const { prices, commodities } = useAllStreamPrices();
   const { toast } = useToast();
   const commodityTickers = useMemo(() => new Set(MOCK_COMMODITIES.map((c) => c.ticker)), []);
+  const holdingPositions = useMemo(() => positions.filter(isDeliveryHoldingPosition), [positions]);
   const [orderOpen, setOrderOpen] = useState(false);
   const [orderType, setOrderType] = useState<OrderType>("BUY");
   const [selectedPosition, setSelectedPosition] = useState<Position | null>(null);
@@ -175,99 +120,15 @@ export function HoldingsList() {
 
   // ── SSE-based price sync for equity & commodity positions ──
   useEffect(() => {
-    for (const pos of positions) {
+    for (const pos of holdingPositions) {
       const isCommodity = commodityTickers.has(pos.ticker);
-      if (isFnoPosition(pos)) continue; // FNO handled by polling below
 
       const live = isCommodity ? commodities[pos.ticker]?.ltp : prices[pos.ticker]?.ltp;
       if (typeof live !== "number" || live <= 0 || live === pos.ltp) continue;
 
       flashAndUpdate(pos.id, pos.ticker, live, pos.ltp);
     }
-  }, [positions, prices, commodities, flashAndUpdate, commodityTickers]);
-
-  // ── Polling-based price sync for F&O positions ──
-  // SSE streams don't carry F&O data so we poll the /api/fno/quote endpoint
-  useEffect(() => {
-    const fnoPositions = positions.filter(isFnoPosition);
-    if (fnoPositions.length === 0) return;
-
-    let active = true;
-
-    const fetchFnoPrices = async () => {
-      for (const pos of fnoPositions) {
-        if (!active) return;
-        try {
-          const contractKind = getFnoContractKind(pos.ticker);
-          const maybeUpdate = (ltp: number) => {
-            if (!active || ltp <= 0 || ltp === pos.ltp) return false;
-            if (!shouldAcceptFnoLtp({
-              ticker: pos.ticker,
-              stockName: pos.stockName,
-              avgPrice: pos.avg_price,
-              currentLtp: pos.ltp,
-              candidateLtp: ltp,
-            })) {
-              return false;
-            }
-            flashAndUpdate(pos.id, pos.ticker, ltp, pos.ltp);
-            return true;
-          };
-
-          // Try resolving via the FNO resolve endpoint first (handles simplified tickers like NIFTY25300CE)
-          const simplified = pos.ticker.toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
-          const resolveData = await apiGetJson<{ resolved?: boolean; tradingSymbol?: string }>(
-            `/api/fno/resolve?ticker=${encodeURIComponent(simplified)}`
-          );
-          if (resolveData?.resolved && resolveData.tradingSymbol) {
-            const q = await apiGetJson<{ ltp?: number }>(
-              `/api/quote?exchange=NSE&segment=FNO&trading_symbol=${encodeURIComponent(resolveData.tradingSymbol)}`
-            );
-            const ltp = Number(q?.ltp);
-            if (maybeUpdate(ltp)) {
-              continue;
-            }
-          }
-
-          const optionContract = parseFnoOptionContract(pos.ticker, pos.stockName);
-          if (optionContract) {
-            const chainData = await apiGetJson<FnoOptionChainResponse>(
-              `/api/option-chain?exchange=NSE&underlying=${encodeURIComponent(optionContract.underlying)}&expiry_date=${encodeURIComponent(FNO_EXPIRY_DATES[0])}`,
-              { ttlMs: 30_000 }
-            );
-            const rows = chainData?.strikes ?? chainData?.optionChain ?? [];
-            const row = rows.find((entry) => entry.strikePrice === optionContract.strikePrice);
-            const ltp = Number(row?.[optionContract.optionType]?.ltp);
-            if (maybeUpdate(ltp)) {
-              continue;
-            }
-          }
-
-          if (contractKind === "OPT") {
-            continue;
-          }
-
-          // Fallback: direct FNO quote endpoint for futures.
-          const q = await apiGetJson<{ ltp?: number }>(
-            `/api/fno/quote/${encodeURIComponent(pos.ticker)}`
-          );
-          const ltp = Number(q?.ltp);
-          maybeUpdate(ltp);
-        } catch {
-          // Ignore individual fetch errors — will retry next cycle
-        }
-      }
-    };
-
-    fetchFnoPrices();
-    const interval = setInterval(fetchFnoPrices, 15_000);
-
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positions.map(p => p.id).join(","), flashAndUpdate]);
+  }, [holdingPositions, prices, commodities, flashAndUpdate, commodityTickers]);
 
   useEffect(() => {
     return () => {
@@ -292,15 +153,15 @@ export function HoldingsList() {
     });
   };
 
-  if (positions.length === 0) {
+  if (holdingPositions.length === 0) {
     return (
       <div className="terminal-panel p-8 text-center">
         <Briefcase size={38} className="mx-auto mb-3 text-[var(--terminal-subtle)] opacity-45" />
         <h3 className="mb-1 text-sm font-semibold text-[var(--terminal-fg)]">
-          No Holdings Yet
+          No Delivery Holdings
         </h3>
         <p className="terminal-subtle mb-4 text-xs">
-          Start paper trading to build your portfolio
+          Delivery stock holdings will appear here. Intraday and F&O positions are shown above.
         </p>
         <div className="flex flex-wrap justify-center gap-2">
           <Link
@@ -335,18 +196,14 @@ export function HoldingsList() {
       </div>
 
       {/* Holdings */}
-      {positions.map((pos) => {
+      {holdingPositions.map((pos) => {
         const isProfit = pos.pnl >= 0;
         const isCommodity = commodityTickers.has(pos.ticker);
-        const isFno = isFnoPosition(pos);
-        const underlying = isFno ? extractFnoUnderlying(pos) : "";
         const absQuantity = Math.abs(pos.quantity);
         const sideLabel = pos.quantity < 0 ? "SHORT" : "LONG";
         const href = isCommodity
           ? `/commodities/${pos.ticker}`
-          : isFno
-            ? `/fno?underlying=${encodeURIComponent(underlying)}&contract=${encodeURIComponent(pos.ticker)}`
-            : `/stocks/${pos.ticker}`;
+          : `/stocks/${pos.ticker}`;
         return (
           <div
             key={pos.id}
@@ -424,7 +281,7 @@ export function HoldingsList() {
           defaultType={orderType}
           defaultProduct={selectedPosition.product}
           defaultStrategyTag={selectedPosition.strategy_tag}
-          lotSize={inferFnoLotSize(selectedPosition)}
+          lotSize={selectedPosition.lot_size ?? 1}
         />
       )}
     </div>

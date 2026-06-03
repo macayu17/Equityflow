@@ -22,7 +22,7 @@ import { API_CONFIG, MOCK_COMMODITIES } from "@/lib/constants";
 import { getMarketStatus, type MarketSegment } from "@/lib/market-hours";
 import { estimateTradeCharges } from "@/lib/trading-charges";
 import { estimateRequiredMargin, getPortfolioRisk } from "@/lib/risk-engine";
-import { getSafeFnoLtp } from "@/lib/fno-pricing";
+import { getSafeFnoLtp, shouldAcceptFnoLtp } from "@/lib/fno-pricing";
 
 // ─── In-Memory Database ─────────────────────────────────────
 interface Database {
@@ -171,10 +171,11 @@ export function createPortfolioManager(): VirtualPortfolioManager {
   }
 
   function getOrderSegment(ticker: string, lotSize?: number): MarketSegment {
-    if (lotSize && lotSize > 1) return "fno";
     if (commodityTickers.has(ticker)) return "commodity";
 
     const symbol = ticker.toUpperCase();
+    if (/CRUDE|GOLD|SILVER|COPPER|ZINC|ALUM|NATGAS|NATURALGAS|ELECTRICITY/.test(symbol)) return "commodity";
+    if (lotSize && lotSize > 1) return "fno";
     const isFutureContract = symbol.endsWith("FUT");
     const isOptionContract = (symbol.endsWith("CE") || symbol.endsWith("PE")) && /\d/.test(symbol);
 
@@ -440,11 +441,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
       position.quantity = nextQty;
       position.invested = roundMoney(position.avg_price * nextQty);
-      position.current_value = roundMoney(position.ltp * nextQty);
-      position.pnl = roundMoney(position.current_value - position.invested);
-      position.pnl_percent = position.invested > 0
-        ? roundMoney((position.pnl / position.invested) * 100)
-        : 0;
+      refreshSignedPosition(position, executedPrice);
     }
 
     database.positions = database.positions.filter((position) => position.quantity > 0);
@@ -504,7 +501,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     executedQuantity: number,
     remainingBefore: number,
     charges: ReturnType<typeof estimateTradeCharges>
-  ): { ok: boolean; realizedPnl: number } {
+  ): { ok: boolean; realizedPnl: number; closedQuantity: number } {
     const closingSign = order.type === "BUY" ? -1 : 1;
     const candidates = database.positions
       .map((position, index) => ({ position, index }))
@@ -561,7 +558,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       order.status = "REJECTED";
       order.status_note = "Rejected: insufficient margin";
       order.rejection_reason = order.status_note;
-      return { ok: false, realizedPnl: 0 };
+      return { ok: false, realizedPnl: 0, closedQuantity: 0 };
     }
 
     let realizedPnl = 0;
@@ -605,7 +602,8 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       order.margin_released = roundMoney((order.margin_released ?? 0) + releasedMargin);
     }
 
-    return { ok: true, realizedPnl: roundMoney(realizedPnl) };
+    const closedQuantity = closePlans.reduce((sum, plan) => sum + plan.closeQty, 0);
+    return { ok: true, realizedPnl: roundMoney(realizedPnl), closedQuantity };
   }
 
   function applyExecution(order: Order, executedPrice: number, executedAt: Date, fillQuantity = order.remaining_quantity ?? order.quantity) {
@@ -614,6 +612,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     if (executedQuantity <= 0) return false;
     const segment = order.segment ?? getOrderSegment(order.ticker, order.lot_size);
     const marginProduct = isMarginProduct(order.product, segment);
+    let realizedPnlForFill: number | undefined;
 
     const charges = estimateTradeCharges({
       type: order.type,
@@ -634,6 +633,9 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       }
       if (applied.realizedPnl !== 0) {
         order.realized_pnl = roundMoney((order.realized_pnl ?? 0) + applied.realizedPnl);
+      }
+      if (applied.closedQuantity > 0) {
+        realizedPnlForFill = applied.realizedPnl;
       }
     } else if (order.type === "BUY") {
       const reserved = order.reserved_amount ?? 0;
@@ -671,6 +673,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         return false;
       }
       order.realized_pnl = roundMoney((order.realized_pnl ?? 0) + reduced.realizedPnl);
+      realizedPnlForFill = reduced.realizedPnl;
       database.user.virtual_balance = roundMoney(database.user.virtual_balance + charges.netAmount);
     }
 
@@ -744,7 +747,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       charges: charges.total,
       gross_total: turnover,
       net_total: charges.netAmount,
-      realized_pnl: order.realized_pnl,
+      realized_pnl: realizedPnlForFill,
       strategy_tag: order.strategy_tag,
       product: order.product,
       status: "COMPLETED",
@@ -894,7 +897,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         return { success: false, message: "Only open orders can be cancelled." };
       }
 
-      if (order.type === "BUY" && (order.reserved_amount ?? 0) > 0) {
+      if ((order.reserved_amount ?? 0) > 0) {
         database.user.virtual_balance = roundMoney(database.user.virtual_balance + (order.reserved_amount ?? 0));
         order.reserved_amount = 0;
       }
@@ -966,9 +969,11 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         database.user.virtual_balance = parseFloat((effectiveBalance - nextDebit).toFixed(2));
         order.reserved_amount = nextDebit;
         order.margin_required = nextDebit;
-        order.charges = nextCharges.total;
-        order.gross_total = nextCharges.turnover;
-        order.net_total = nextCharges.netAmount;
+        if (alreadyFilled === 0) {
+          order.charges = nextCharges.total;
+          order.gross_total = nextCharges.turnover;
+          order.net_total = nextCharges.netAmount;
+        }
       }
 
       if (order.type === "SELL") {
@@ -1005,9 +1010,11 @@ export function createPortfolioManager(): VirtualPortfolioManager {
           quantity: nextRemaining,
           segment,
         });
-        order.charges = nextCharges.total;
-        order.gross_total = nextCharges.turnover;
-        order.net_total = nextCharges.netAmount;
+        if (alreadyFilled === 0) {
+          order.charges = nextCharges.total;
+          order.gross_total = nextCharges.turnover;
+          order.net_total = nextCharges.netAmount;
+        }
       }
       order.status_note = getTriggerStatusNote(order, getMarketStatus(segment).isOpen);
       persist();
@@ -1043,6 +1050,16 @@ export function createPortfolioManager(): VirtualPortfolioManager {
             continue;
           }
 
+          if (segment === "fno" && !shouldAcceptFnoLtp({
+            ticker: order.ticker,
+            stockName: order.stockName,
+            avgPrice: order.price,
+            currentLtp: order.executed_price,
+            candidateLtp: marketPrice,
+          })) {
+            continue;
+          }
+
           if (!isOrderTriggered(order, marketPrice)) {
             continue;
           }
@@ -1050,9 +1067,12 @@ export function createPortfolioManager(): VirtualPortfolioManager {
           const remainingQty = order.remaining_quantity ?? order.quantity;
           if (remainingQty <= 0) continue;
           const availableQty = Number(priceData.availableQuantity);
-          const fillQuantity = Number.isFinite(availableQty) && availableQty > 0
+          let fillQuantity = Number.isFinite(availableQty) && availableQty > 0
             ? Math.min(remainingQty, Math.floor(availableQty))
             : remainingQty;
+          if (segment === "fno" && order.lot_size && order.lot_size > 1) {
+            fillQuantity = Math.floor(fillQuantity / order.lot_size) * order.lot_size;
+          }
           if (fillQuantity <= 0) continue;
 
           if (order.type === "SELL" && !isMarginProduct(order.product, segment)) {
@@ -1068,7 +1088,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
             }
           }
 
-          const executionPrice = order.variety === "MARKET" || order.variety === "SL-M"
+          const executionPrice = order.variety === "MARKET"
             ? (priceData.openPrice > 0 ? priceData.openPrice : marketPrice)
             : marketPrice;
 

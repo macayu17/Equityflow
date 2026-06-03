@@ -104,8 +104,11 @@ export function shouldAcceptFnoLtp(input: {
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
   const lowReference = referencePrices.length > 0 ? Math.min(...referencePrices) : 0;
   const looksLikeUnderlying = input.candidateLtp >= contract.strikePrice * 0.5;
+  const looksLikePremiumSpike = lowReference > 0
+    && input.candidateLtp >= Math.max(100, lowReference * 20)
+    && input.candidateLtp >= contract.strikePrice * 0.1;
 
-  if (looksLikeUnderlying && (lowReference === 0 || lowReference <= contract.strikePrice * 0.1)) {
+  if ((looksLikeUnderlying || looksLikePremiumSpike) && (lowReference === 0 || lowReference <= contract.strikePrice * 0.1)) {
     return false;
   }
 

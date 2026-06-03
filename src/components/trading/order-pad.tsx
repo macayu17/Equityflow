@@ -47,10 +47,11 @@ export function OrderPad({
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const isFnO = lotSize > 1;
+  const initialProduct = isFnO ? "INTRADAY" : (defaultProduct ?? "DELIVERY");
 
   const [orderType, setOrderType] = useState<OrderType>(defaultType);
   const [variety, setVariety] = useState<OrderVariety>(defaultVariety);
-  const [product, setProduct] = useState<ProductType>(defaultProduct ?? (isFnO ? "INTRADAY" : "DELIVERY"));
+  const [product, setProduct] = useState<ProductType>(initialProduct);
   const [strategyTag, setStrategyTag] = useState<StrategyTag>(defaultStrategyTag);
   const [quantity, setQuantity] = useState(1); // For F&O: number of lots; For equity: shares
   const [limitPrice, setLimitPrice] = useState(defaultLimitPrice ?? ltp);
@@ -60,7 +61,7 @@ export function OrderPad({
     if (!open) return;
     const initialQuantity = isFnO ? Math.max(1, Math.ceil(defaultQuantity / lotSize)) : Math.max(1, defaultQuantity);
     setOrderType(defaultType);
-    setProduct(defaultProduct ?? (isFnO ? "INTRADAY" : "DELIVERY"));
+    setProduct(isFnO ? "INTRADAY" : (defaultProduct ?? "DELIVERY"));
     setStrategyTag(defaultStrategyTag);
     setVariety(defaultVariety);
     setQuantity(initialQuantity);
@@ -236,22 +237,28 @@ export function OrderPad({
               <label className="terminal-subtle mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.12em]">
                 Product
               </label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {(["DELIVERY", "INTRADAY"] as const).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setProduct(p)}
-                    className={cn(
-                      "rounded-sm border py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] transition-all",
-                      product === p
-                        ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
-                        : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)] hover:border-[color:var(--terminal-accent)]"
-                    )}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
+              {isFnO ? (
+                <div className="rounded-sm border border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] py-1.5 text-center font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--terminal-accent)]">
+                  F&O Margin
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(["DELIVERY", "INTRADAY"] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setProduct(p)}
+                      className={cn(
+                        "rounded-sm border py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] transition-all",
+                        product === p
+                          ? "border-[color:var(--terminal-accent)] bg-[var(--terminal-accent-soft)] text-[var(--terminal-accent)]"
+                          : "border-[color:var(--terminal-grid)] text-[var(--terminal-subtle)] hover:border-[color:var(--terminal-accent)]"
+                      )}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div>

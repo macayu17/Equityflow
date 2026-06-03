@@ -2468,7 +2468,8 @@ async def get_ltp(
     Batch LTP for up to 50 instruments.
     GET https://api.groww.in/v1/live-data/ltp?segment=CASH&exchange_symbols=NSE_RELIANCE,BSE_SENSEX
     """
-    if _market_provider_order()[0] == "upstox":
+    provider_order = _market_provider_order()
+    if provider_order[0] == "upstox":
         upstox_data = await _upstox_batch_ltp(segment.upper(), exchange_symbols.upper())
         if upstox_data:
             return upstox_data
@@ -2480,13 +2481,12 @@ async def get_ltp(
     if data:
         return {"source": "groww", "prices": data}
 
-    if _market_provider_order()[0] != "upstox":
+    if provider_order[0] != "upstox":
         upstox_data = await _upstox_batch_ltp(segment.upper(), exchange_symbols.upper())
         if upstox_data:
             return upstox_data
 
-    # No mock fallback
-    return {"source": "error", "prices": {}}
+    raise HTTPException(status_code=502, detail=f"Unable to fetch LTP for {exchange_symbols}")
 
 
 # â”€â”€â”€ Live Data: OHLC (up to 50 symbols) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2499,7 +2499,8 @@ async def get_ohlc(
     Batch OHLC for instruments.
     GET https://api.groww.in/v1/live-data/ohlc?segment=CASH&exchange_symbols=NSE_RELIANCE
     """
-    if _market_provider_order()[0] == "upstox":
+    provider_order = _market_provider_order()
+    if provider_order[0] == "upstox":
         upstox_data = await _upstox_batch_ohlc(segment.upper(), exchange_symbols.upper())
         if upstox_data:
             return upstox_data
@@ -2511,13 +2512,12 @@ async def get_ohlc(
     if data:
         return {"source": "groww", "ohlc": data}
 
-    if _market_provider_order()[0] != "upstox":
+    if provider_order[0] != "upstox":
         upstox_data = await _upstox_batch_ohlc(segment.upper(), exchange_symbols.upper())
         if upstox_data:
             return upstox_data
 
-    # No mock fallback
-    return {"source": "error", "ohlc": {}}
+    raise HTTPException(status_code=502, detail=f"Unable to fetch OHLC for {exchange_symbols}")
 
 
 # â”€â”€â”€ Live Data: Option Chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2526,12 +2526,14 @@ async def get_option_chain(
     exchange: str = Query("NSE"),
     underlying: str = Query(..., description="e.g. NIFTY, BANKNIFTY, RELIANCE"),
     expiry_date: str = Query(..., description="YYYY-MM-DD"),
+    allow_mock: bool = Query(False, description="Allow synthetic option-chain data for demo mode"),
 ):
     """
     Full option chain with greeks.
     GET https://api.groww.in/v1/option-chain/exchange/{exchange}/underlying/{underlying}?expiry_date={expiry_date}
     """
-    if _market_provider_order()[0] == "upstox":
+    provider_order = _market_provider_order()
+    if provider_order[0] == "upstox":
         upstox_chain = await _upstox_option_chain(underlying, expiry_date, exchange)
         if upstox_chain:
             return upstox_chain
@@ -2622,10 +2624,13 @@ async def get_option_chain(
                 "strikes": strikes_list,
             }
 
-    if _market_provider_order()[0] != "upstox":
+    if provider_order[0] != "upstox":
         upstox_chain = await _upstox_option_chain(underlying, expiry_date, exchange)
         if upstox_chain:
             return upstox_chain
+
+    if not allow_mock:
+        raise HTTPException(status_code=502, detail=f"Unable to fetch option chain for {underlying} {expiry_date}")
 
     # â”€â”€ Mock fallback: generate synthetic option chain â”€â”€
     underlying_info = MOCK_FNO_UNDERLYINGS.get(underlying.upper())
@@ -2986,9 +2991,13 @@ async def resolve_fno_symbol(ticker: str = Query(..., description="Simplified ti
 
 
 @app.get("/api/fno/quote/{ticker}", response_model=StockQuote)
-async def get_fno_quote(ticker: str):
+async def get_fno_quote(
+    ticker: str,
+    allow_mock: bool = Query(False, description="Allow static underlying fallback for demo mode"),
+):
     """Get F&O underlying spot quote."""
     ticker = ticker.upper()
+    provider_order = _market_provider_order()
     indices = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
     is_index = ticker in indices
 
@@ -3003,7 +3012,7 @@ async def get_fno_quote(ticker: str):
     is_contract = ticker.endswith("FUT") or is_option_contract
     upstox_segment = "FNO" if is_contract else "CASH"
 
-    if _market_provider_order()[0] == "upstox":
+    if provider_order[0] == "upstox":
         upstox_data = await _upstox_full_quote(ticker, upstox_segment, "NSE")
         if upstox_data:
             base_info = MOCK_FNO_UNDERLYINGS.get(ticker, {"name": ticker})
@@ -3096,7 +3105,7 @@ async def get_fno_quote(ticker: str):
                 timestamp=datetime.now().isoformat(),
             )
 
-    if _market_provider_order()[0] != "upstox":
+    if provider_order[0] != "upstox":
         upstox_data = await _upstox_full_quote(ticker, upstox_segment, "NSE")
         if upstox_data:
             base_info = MOCK_FNO_UNDERLYINGS.get(ticker, {"name": ticker})
@@ -3120,6 +3129,9 @@ async def get_fno_quote(ticker: str):
             status_code=502,
             detail=f"Unable to fetch option contract quote for {ticker}; use the resolved FNO symbol or option-chain premium.",
         )
+
+    if not allow_mock:
+        raise HTTPException(status_code=502, detail=f"Unable to fetch F&O quote for {ticker}")
 
     fallback_key = ticker[:-3] if ticker.endswith("FUT") else ticker
     if fallback_key not in MOCK_FNO_UNDERLYINGS:
