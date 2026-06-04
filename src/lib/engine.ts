@@ -33,6 +33,36 @@ interface Database {
 }
 
 const STORAGE_KEY = "equityflow_db";
+const AUTO_SQUARE_OFF_CHARGE = 59;
+const SQUARE_OFF_CUTOFF_HOUR_IST = 15;
+const SQUARE_OFF_CUTOFF_MINUTE_IST = 20;
+const IST_DATE_TIME_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function getIstDateParts(date: Date): { dayKey: string; hour: number; minute: number } {
+  const parts = IST_DATE_TIME_FORMAT.formatToParts(date).reduce<Record<string, string>>((acc, part) => {
+    if (part.type !== "literal") acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return {
+    dayKey: `${parts.year}-${parts.month}-${parts.day}`,
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+function isAtOrAfterSquareOffCutoff(date: Date): boolean {
+  const { hour, minute } = getIstDateParts(date);
+  return hour > SQUARE_OFF_CUTOFF_HOUR_IST
+    || (hour === SQUARE_OFF_CUTOFF_HOUR_IST && minute >= SQUARE_OFF_CUTOFF_MINUTE_IST);
+}
 
 function getDefaultUser(): User {
   return {
@@ -57,15 +87,15 @@ function loadDb(): Database {
         ...t,
         timestamp: new Date(t.timestamp),
       }));
-      parsed.positions = Array.isArray(parsed.positions)
-        ? parsed.positions.map((p: Position) => sanitizeLoadedPosition(p))
-        : [];
       parsed.orders = parsed.orders.map((o: Order) => ({
         ...o,
         timestamp: new Date(o.timestamp),
         queued_at: o.queued_at ? new Date(o.queued_at) : undefined,
         executed_at: o.executed_at ? new Date(o.executed_at) : undefined,
       }));
+      parsed.positions = Array.isArray(parsed.positions)
+        ? parsed.positions.map((p: Position) => sanitizeLoadedPosition(p, parsed.transactions, parsed.orders))
+        : [];
       return parsed;
     }
   } catch {
@@ -83,7 +113,38 @@ function roundLoadedMoney(value: number): number {
   return parseFloat(value.toFixed(2));
 }
 
-function sanitizeLoadedPosition(position: Position): Position {
+function normalizeOptionalDate(value: unknown): Date | undefined {
+  if (!value) return undefined;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function inferPositionOpenedAt(position: Position, transactions: Transaction[], orders: Order[]): Date | undefined {
+  const openingType = position.quantity < 0 ? "SELL" : "BUY";
+  const matchingTransactions = transactions
+    .filter((transaction) =>
+      transaction.ticker === position.ticker &&
+      transaction.product === position.product &&
+      transaction.strategy_tag === position.strategy_tag &&
+      transaction.type === openingType
+    )
+    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  if (matchingTransactions[0]) return matchingTransactions[0].timestamp;
+
+  const matchingOrders = orders
+    .filter((order) =>
+      order.ticker === position.ticker &&
+      order.product === position.product &&
+      order.strategy_tag === position.strategy_tag &&
+      order.type === openingType &&
+      order.status === "COMPLETED"
+    )
+    .sort((a, b) => (b.executed_at ?? b.timestamp).getTime() - (a.executed_at ?? a.timestamp).getTime());
+  return matchingOrders[0] ? (matchingOrders[0].executed_at ?? matchingOrders[0].timestamp) : undefined;
+}
+
+function sanitizeLoadedPosition(position: Position, transactions: Transaction[] = [], orders: Order[] = []): Position {
+  const openedAt = normalizeOptionalDate(position.opened_at) ?? inferPositionOpenedAt(position, transactions, orders);
   const safeLtp = getSafeFnoLtp({
     ticker: position.ticker,
     stockName: position.stockName,
@@ -93,7 +154,10 @@ function sanitizeLoadedPosition(position: Position): Position {
   });
 
   if (safeLtp === position.ltp) {
-    return position;
+    return {
+      ...position,
+      opened_at: openedAt,
+    };
   }
 
   const quantity = Number(position.quantity) || 0;
@@ -105,6 +169,7 @@ function sanitizeLoadedPosition(position: Position): Position {
   return {
     ...position,
     ltp: safeLtp,
+    opened_at: openedAt,
     invested,
     current_value: currentValue,
     pnl,
@@ -448,7 +513,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     return { ok: remaining === 0, realizedPnl: roundMoney(realizedPnl) };
   }
 
-  function addMarginPosition(order: Order, executedPrice: number, quantity: number, entryCharges: number, marginRequired: number) {
+  function addMarginPosition(order: Order, executedPrice: number, quantity: number, entryCharges: number, marginRequired: number, openedAt: Date) {
     if (quantity <= 0) return;
     const signedQty = order.type === "BUY" ? quantity : -quantity;
     const direction = Math.sign(signedQty);
@@ -488,6 +553,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       strategy_tag: order.strategy_tag,
       product: order.product,
       ltp: roundMoney(executedPrice),
+      opened_at: openedAt,
       lot_size: order.lot_size,
       margin_required: roundMoney(marginRequired),
     };
@@ -500,7 +566,8 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     executedPrice: number,
     executedQuantity: number,
     remainingBefore: number,
-    charges: ReturnType<typeof estimateTradeCharges>
+    charges: ReturnType<typeof estimateTradeCharges>,
+    executedAt: Date
   ): { ok: boolean; realizedPnl: number; closedQuantity: number } {
     const closingSign = order.type === "BUY" ? -1 : 1;
     const candidates = database.positions
@@ -595,7 +662,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
     if (openingQty > 0) {
       const entryCharges = executedQuantity > 0 ? roundMoney(charges.total * (openingQty / executedQuantity)) : 0;
-      addMarginPosition(order, executedPrice, openingQty, entryCharges, openingMargin);
+      addMarginPosition(order, executedPrice, openingQty, entryCharges, openingMargin, executedAt);
     }
 
     if (releasedMargin > 0) {
@@ -627,7 +694,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       : charges.netAmount;
 
     if (marginProduct) {
-      const applied = applyMarginExecution(order, executedPrice, executedQuantity, remainingBefore, charges);
+      const applied = applyMarginExecution(order, executedPrice, executedQuantity, remainingBefore, charges, executedAt);
       if (!applied.ok) {
         return false;
       }
@@ -715,6 +782,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
           strategy_tag: order.strategy_tag,
           product: order.product,
           ltp: roundMoney(executedPrice),
+          opened_at: executedAt,
           lot_size: order.lot_size,
         });
       }
@@ -757,6 +825,87 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     return true;
   }
 
+  function applyAutoSquareOffCharge(order: Order) {
+    const fee = AUTO_SQUARE_OFF_CHARGE;
+    database.user.virtual_balance = roundMoney(database.user.virtual_balance - fee);
+    order.charges = roundMoney((order.charges ?? 0) + fee);
+    order.net_total = roundMoney((order.net_total ?? 0) + (order.type === "BUY" ? fee : -fee));
+    order.realized_pnl = roundMoney((order.realized_pnl ?? 0) - fee);
+    order.status_note = `Auto square-off at 3:20 PM; charge ₹${fee.toFixed(2)} applied`;
+
+    const transaction = database.transactions[database.transactions.length - 1];
+    if (transaction?.id === order.id) {
+      transaction.charges = roundMoney((transaction.charges ?? 0) + fee);
+      transaction.net_total = roundMoney((transaction.net_total ?? transaction.total) + (order.type === "BUY" ? fee : -fee));
+      transaction.total = transaction.net_total;
+      transaction.realized_pnl = roundMoney((transaction.realized_pnl ?? 0) - fee);
+    }
+  }
+
+  function shouldAutoSquareOffIntraday(position: Position, now: Date): boolean {
+    if (position.product !== "INTRADAY") return false;
+    if (getOrderSegment(position.ticker, position.lot_size) === "fno") return false;
+    if (!position.opened_at) return false;
+
+    const openedDay = getIstDateParts(position.opened_at).dayKey;
+    const currentDay = getIstDateParts(now).dayKey;
+    if (openedDay < currentDay) return true;
+    return openedDay === currentDay && isAtOrAfterSquareOffCutoff(now);
+  }
+
+  function autoSquareOffExpiredIntraday(now = new Date()) {
+    const candidates = [...database.positions].filter((position) => shouldAutoSquareOffIntraday(position, now));
+    if (candidates.length === 0) return;
+
+    let changed = false;
+    for (const position of candidates) {
+      if (!database.positions.some((current) => current.id === position.id)) continue;
+
+      const exitPrice = position.ltp > 0 ? position.ltp : position.avg_price;
+      const exitType: "BUY" | "SELL" = position.quantity < 0 ? "BUY" : "SELL";
+      const exitQuantity = Math.abs(position.quantity);
+      const segment = getOrderSegment(position.ticker, position.lot_size);
+      const charges = estimateTradeCharges({
+        type: exitType,
+        product: position.product,
+        price: exitPrice,
+        quantity: exitQuantity,
+        segment,
+      });
+      const order: Order = {
+        id: generateId(),
+        type: exitType,
+        ticker: position.ticker,
+        stockName: position.stockName,
+        price: exitPrice,
+        quantity: exitQuantity,
+        variety: "MARKET",
+        product: position.product,
+        strategy_tag: position.strategy_tag,
+        status: "PENDING",
+        timestamp: now,
+        segment,
+        status_note: "Auto square-off queued",
+        lot_size: position.lot_size,
+        charges: roundMoney(charges.total + AUTO_SQUARE_OFF_CHARGE),
+        gross_total: charges.turnover,
+        net_total: roundMoney(charges.netAmount + (exitType === "BUY" ? AUTO_SQUARE_OFF_CHARGE : -AUTO_SQUARE_OFF_CHARGE)),
+        filled_quantity: 0,
+        remaining_quantity: exitQuantity,
+        margin_required: 0,
+      };
+
+      database.orders.push(order);
+      const ok = applyExecution(order, exitPrice, now, exitQuantity);
+      if (ok) {
+        applyAutoSquareOffCharge(order);
+        changed = true;
+      }
+    }
+
+    if (changed) persist();
+  }
+
   return {
     // ── Account ────────────────────────────────
     getUser() {
@@ -764,6 +913,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     },
 
     getBalance() {
+      autoSquareOffExpiredIntraday();
       return database.user.virtual_balance;
     },
 
@@ -885,6 +1035,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     },
 
     getOrders() {
+      autoSquareOffExpiredIntraday();
       return [...database.orders].reverse();
     },
 
@@ -1112,10 +1263,12 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
     // ── Positions ──────────────────────────────
     getPositions() {
+      autoSquareOffExpiredIntraday();
       return database.positions;
     },
 
     getPosition(ticker: string) {
+      autoSquareOffExpiredIntraday();
       return database.positions.find((p) => p.ticker === ticker);
     },
 
@@ -1194,6 +1347,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     },
 
     getPortfolioSummary(): PortfolioSummary {
+      autoSquareOffExpiredIntraday();
       const positions = database.positions;
       const totalInvested = positions.reduce((s, p) => s + Math.abs(p.invested), 0);
       const currentValue = positions.reduce((s, p) => s + Math.abs(p.current_value), 0);
@@ -1226,6 +1380,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     },
 
     getRiskSummary(): PortfolioRiskSummary {
+      autoSquareOffExpiredIntraday();
       return getPortfolioRisk({
         balance: database.user.virtual_balance,
         positions: database.positions,
@@ -1233,6 +1388,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     },
 
     getPortfolioAnalytics(): PortfolioAnalytics {
+      autoSquareOffExpiredIntraday();
       const summary = this.getPortfolioSummary();
       const closedTrades = database.transactions
         .filter((transaction) => typeof transaction.realized_pnl === "number")
@@ -1297,11 +1453,13 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
     // ── Transactions ───────────────────────────
     getTransactions() {
+      autoSquareOffExpiredIntraday();
       return [...database.transactions].reverse();
     },
 
     // ── Strategy Analytics ─────────────────────
     getStrategyPerformance(): StrategyPerformance[] {
+      autoSquareOffExpiredIntraday();
       return STRATEGY_TAGS.map((tag: StrategyTag) => {
         const tagTxns = database.transactions.filter((t) => t.strategy_tag === tag);
         const tagPositions = database.positions.filter((p) => p.strategy_tag === tag);

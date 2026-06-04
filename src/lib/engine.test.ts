@@ -204,6 +204,78 @@ describe("portfolio trading engine", () => {
     expect(manager.getPortfolioSummary().realizedPnl).toBeGreaterThan(45);
   });
 
+  it("auto square-offs stale intraday longs after the cutoff with a system charge", () => {
+    const manager = getPortfolioManager();
+
+    const buy = manager.placeOrder(baseOrder({
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    }));
+    expect(buy.success).toBe(true);
+    expect(manager.getPosition("RELIANCE")).toBeDefined();
+
+    vi.setSystemTime(new Date("2026-05-12T04:00:00.000Z"));
+
+    expect(manager.getPositions()).toHaveLength(0);
+    const exitOrder = manager.getOrders()[0];
+    expect(exitOrder).toMatchObject({
+      type: "SELL",
+      ticker: "RELIANCE",
+      product: "INTRADAY",
+      status: "COMPLETED",
+    });
+    expect(exitOrder.status_note).toContain("Auto square-off");
+    expect(exitOrder.charges).toBeGreaterThanOrEqual(59);
+    expect(manager.getPortfolioSummary().realizedPnl).toBeLessThan(0);
+  });
+
+  it("auto square-offs stale intraday shorts after the cutoff with a system charge", () => {
+    const manager = getPortfolioManager();
+
+    const short = manager.placeOrder(baseOrder({
+      type: "SELL",
+      ticker: "TCS",
+      stockName: "Tata Consultancy Services Ltd",
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    }));
+    expect(short.success).toBe(true);
+    expect(manager.getPosition("TCS")).toMatchObject({ quantity: -10 });
+
+    vi.setSystemTime(new Date("2026-05-12T04:00:00.000Z"));
+
+    expect(manager.getPositions()).toHaveLength(0);
+    const exitOrder = manager.getOrders()[0];
+    expect(exitOrder).toMatchObject({
+      type: "BUY",
+      ticker: "TCS",
+      product: "INTRADAY",
+      status: "COMPLETED",
+    });
+    expect(exitOrder.status_note).toContain("Auto square-off");
+    expect(exitOrder.charges).toBeGreaterThanOrEqual(59);
+    expect(manager.getPortfolioSummary().realizedPnl).toBeLessThan(0);
+  });
+
+  it("keeps same-day intraday positions open before the square-off cutoff", () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    })).success).toBe(true);
+
+    vi.setSystemTime(new Date("2026-05-11T09:49:00.000Z"));
+
+    expect(manager.getPositions()).toHaveLength(1);
+  });
+
   it("still rejects delivery sells when there are no holdings", () => {
     const manager = getPortfolioManager();
 

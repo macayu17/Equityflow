@@ -152,6 +152,7 @@ export interface Position {
   strategy_tag: StrategyTag;
   product: ProductType;
   ltp: number;
+  opened_at?: Date;
   lot_size?: number;
   margin_required?: number;
 }
