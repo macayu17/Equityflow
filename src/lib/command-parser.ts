@@ -74,6 +74,11 @@ function parseOperator(value?: string): AlertOperator {
   return ">=";
 }
 
+function isOperatorToken(value?: string) {
+  if (!value) return false;
+  return ["<", "<=", ">", ">=", "above", "below"].includes(value.toLowerCase());
+}
+
 function parseOrder(parts: string[], side: OrderType): ParsedTerminalCommand {
   const ticker = cleanTicker(parts[1]);
   if (!ticker) return { kind: "unknown" };
@@ -111,9 +116,10 @@ export function parseTerminalCommand(raw: string): ParsedTerminalCommand {
 
   if (command === "alert") {
     const ticker = cleanTicker(parts[1]);
-    const metric = METRIC_ALIASES[(parts[2] ?? "price").toLowerCase()] ?? "price";
-    const operator = parseOperator(parts[3]);
-    const value = Number(parts[4] ?? parts[3]);
+    const shorthand = isOperatorToken(parts[2]);
+    const metric = shorthand ? "price" : METRIC_ALIASES[(parts[2] ?? "price").toLowerCase()] ?? "price";
+    const operator = parseOperator(shorthand ? parts[2] : parts[3]);
+    const value = Number(shorthand ? parts[3] : parts[4] ?? parts[3]);
     if (!ticker || !Number.isFinite(value)) return { kind: "unknown" };
     return { kind: "alert", ticker, metric, operator, value };
   }

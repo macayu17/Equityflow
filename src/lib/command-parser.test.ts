@@ -36,6 +36,24 @@ describe("terminal command parser", () => {
     });
   });
 
+  it("parses price alert operator shorthand", () => {
+    expect(parseTerminalCommand("alert nifty below 100")).toMatchObject({
+      kind: "alert",
+      ticker: "NIFTY",
+      metric: "price",
+      operator: "<=",
+      value: 100,
+    });
+
+    expect(parseTerminalCommand("alert reliance above 1500")).toMatchObject({
+      kind: "alert",
+      ticker: "RELIANCE",
+      metric: "price",
+      operator: ">=",
+      value: 1500,
+    });
+  });
+
   it("rejects actionable commands without a valid ticker", () => {
     expect(parseTerminalCommand("buy")).toEqual({ kind: "unknown" });
     expect(parseTerminalCommand("sell !!! 10")).toEqual({ kind: "unknown" });
