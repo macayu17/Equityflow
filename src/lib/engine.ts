@@ -203,7 +203,8 @@ export interface VirtualPortfolioManager {
   ): { success: boolean; message: string; order?: Order };
   processPendingOrders(
     resolvePrice: (ticker: string, segment: MarketSegment) => Promise<{ openPrice: number; ltp: number; availableQuantity?: number } | null>
-  ): Promise<{ executed: number; rejected: number }>;
+  ): Promise<{ executed: number; rejected: number; autoSquaredOff: number }>;
+  reconcileExpiredIntradayPositions(): number;
 
   // Positions
   getPositions(): Position[];
@@ -844,8 +845,7 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
   function shouldAutoSquareOffIntraday(position: Position, now: Date): boolean {
     if (position.product !== "INTRADAY") return false;
-    if (getOrderSegment(position.ticker, position.lot_size) === "fno") return false;
-    if (!position.opened_at) return false;
+    if (!position.opened_at) return true;
 
     const openedDay = getIstDateParts(position.opened_at).dayKey;
     const currentDay = getIstDateParts(now).dayKey;
@@ -853,11 +853,11 @@ export function createPortfolioManager(): VirtualPortfolioManager {
     return openedDay === currentDay && isAtOrAfterSquareOffCutoff(now);
   }
 
-  function autoSquareOffExpiredIntraday(now = new Date()) {
+  function autoSquareOffExpiredIntraday(now = new Date()): number {
     const candidates = [...database.positions].filter((position) => shouldAutoSquareOffIntraday(position, now));
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) return 0;
 
-    let changed = false;
+    let squaredOff = 0;
     for (const position of candidates) {
       if (!database.positions.some((current) => current.id === position.id)) continue;
 
@@ -899,11 +899,12 @@ export function createPortfolioManager(): VirtualPortfolioManager {
       const ok = applyExecution(order, exitPrice, now, exitQuantity);
       if (ok) {
         applyAutoSquareOffCharge(order);
-        changed = true;
+        squaredOff += 1;
       }
     }
 
-    if (changed) persist();
+    if (squaredOff > 0) persist();
+    return squaredOff;
   }
 
   return {
@@ -1178,8 +1179,9 @@ export function createPortfolioManager(): VirtualPortfolioManager {
 
     async processPendingOrders(resolvePrice) {
       if (processingPending) {
-        return { executed: 0, rejected: 0 };
+        return { executed: 0, rejected: 0, autoSquaredOff: 0 };
       }
+      const autoSquaredOff = autoSquareOffExpiredIntraday();
       processingPending = true;
       let executed = 0;
       let rejected = 0;
@@ -1258,10 +1260,14 @@ export function createPortfolioManager(): VirtualPortfolioManager {
         persist();
       }
 
-      return { executed, rejected };
+      return { executed, rejected, autoSquaredOff };
     },
 
     // ── Positions ──────────────────────────────
+    reconcileExpiredIntradayPositions() {
+      return autoSquareOffExpiredIntraday();
+    },
+
     getPositions() {
       autoSquareOffExpiredIntraday();
       return database.positions;

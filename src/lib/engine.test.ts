@@ -261,6 +261,84 @@ describe("portfolio trading engine", () => {
     expect(manager.getPortfolioSummary().realizedPnl).toBeLessThan(0);
   });
 
+  it("auto square-offs legacy intraday positions that were saved without an open timestamp", () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    })).success).toBe(true);
+
+    const legacyPosition = manager.getPosition("RELIANCE");
+    expect(legacyPosition).toBeDefined();
+    delete (legacyPosition as { opened_at?: Date }).opened_at;
+
+    vi.setSystemTime(new Date("2026-05-12T04:00:00.000Z"));
+
+    expect(manager.getPositions()).toHaveLength(0);
+    const exitOrder = manager.getOrders()[0];
+    expect(exitOrder).toMatchObject({
+      type: "SELL",
+      ticker: "RELIANCE",
+      product: "INTRADAY",
+      status: "COMPLETED",
+    });
+    expect(exitOrder.charges).toBeGreaterThanOrEqual(59);
+  });
+
+  it("reconciles intraday square-off from the polling loop after the cutoff", async () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 10,
+    })).success).toBe(true);
+
+    vi.setSystemTime(new Date("2026-05-11T10:00:00.000Z"));
+
+    const result = await manager.processPendingOrders(async () => {
+      throw new Error("No pending order price lookup should be needed for square-off reconciliation.");
+    });
+
+    expect(result.autoSquaredOff).toBe(1);
+    expect(manager.getPositions()).toHaveLength(0);
+    expect(manager.getOrders()[0]).toMatchObject({
+      type: "SELL",
+      ticker: "RELIANCE",
+      status: "COMPLETED",
+    });
+  });
+
+  it("auto square-offs stale F&O intraday positions instead of carrying them overnight", () => {
+    const manager = getPortfolioManager();
+
+    expect(manager.placeOrder(baseOrder({
+      ticker: "NIFTY261225300CE",
+      stockName: "NIFTY 25300 CE",
+      product: "INTRADAY",
+      price: 100,
+      market_ltp: 100,
+      quantity: 65,
+      lot_size: 65,
+    })).success).toBe(true);
+
+    vi.setSystemTime(new Date("2026-05-12T04:00:00.000Z"));
+
+    expect(manager.getPositions()).toHaveLength(0);
+    const exitOrder = manager.getOrders()[0];
+    expect(exitOrder).toMatchObject({
+      type: "SELL",
+      ticker: "NIFTY261225300CE",
+      product: "INTRADAY",
+      status: "COMPLETED",
+    });
+    expect(exitOrder.status_note).toContain("Auto square-off");
+  });
+
   it("keeps same-day intraday positions open before the square-off cutoff", () => {
     const manager = getPortfolioManager();
 

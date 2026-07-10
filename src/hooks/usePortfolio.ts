@@ -37,8 +37,10 @@ export function usePortfolio() {
   const commodityTickers = useMemo(() => new Set(MOCK_COMMODITIES.map((c) => c.ticker)), []);
 
   useEffect(() => {
+    const autoSquaredOff = manager.reconcileExpiredIntradayPositions();
     setHydrated(true);
-  }, []);
+    if (autoSquaredOff > 0) emitChange();
+  }, [manager]);
 
   const resolveOpenPrice = useCallback(async (ticker: string, segment: MarketSegment) => {
     try {
@@ -100,7 +102,7 @@ export function usePortfolio() {
     const run = async () => {
       const result = await manager.processPendingOrders(resolveOpenPrice);
       if (!active) return;
-      if (result.executed > 0 || result.rejected > 0) {
+      if (result.executed > 0 || result.rejected > 0 || result.autoSquaredOff > 0) {
         emitChange();
       }
     };
