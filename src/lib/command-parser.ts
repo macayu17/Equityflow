@@ -76,6 +76,7 @@ function parseOperator(value?: string): AlertOperator {
 
 function parseOrder(parts: string[], side: OrderType): ParsedTerminalCommand {
   const ticker = cleanTicker(parts[1]);
+  if (!ticker) return { kind: "unknown" };
   const quantity = Math.max(1, Number(parts[2]) || 1);
   const orderWord = (parts[3] ?? "market").toLowerCase();
   const variety: OrderVariety = orderWord === "limit"
@@ -122,11 +123,13 @@ export function parseTerminalCommand(raw: string): ParsedTerminalCommand {
   }
 
   if (command === "watch") {
-    return { kind: "watch", ticker: cleanTicker(parts[1]) };
+    const ticker = cleanTicker(parts[1]);
+    return ticker ? { kind: "watch", ticker } : { kind: "unknown" };
   }
 
   if (command === "chart") {
-    return { kind: "chart", ticker: cleanTicker(parts[1]) };
+    const ticker = cleanTicker(parts[1]);
+    return ticker ? { kind: "chart", ticker } : { kind: "unknown" };
   }
 
   if (command === "goto" || command === "go") {

@@ -35,4 +35,11 @@ describe("terminal command parser", () => {
       preset: "banking",
     });
   });
+
+  it("rejects actionable commands without a valid ticker", () => {
+    expect(parseTerminalCommand("buy")).toEqual({ kind: "unknown" });
+    expect(parseTerminalCommand("sell !!! 10")).toEqual({ kind: "unknown" });
+    expect(parseTerminalCommand("watch")).toEqual({ kind: "unknown" });
+    expect(parseTerminalCommand("chart @@@")).toEqual({ kind: "unknown" });
+  });
 });
