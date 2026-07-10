@@ -52,24 +52,23 @@ export default function CommodityDetailPage() {
 
   const commodityInfo = MOCK_COMMODITIES.find((c) => c.ticker === ticker);
   const position = positions.find((p) => p.ticker === ticker);
+  const quoteLtp = quote?.ltp ?? 0;
 
   // Update position LTP
   useEffect(() => {
-    if (quote) {
-      updateLTP(ticker, quote.ltp);
+    if (ticker && quoteLtp > 0) {
+      updateLTP(ticker, quoteLtp);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quote?.ltp, ticker, updateLTP]);
+  }, [quoteLtp, ticker, updateLTP]);
 
   // Detect price pulse
   useEffect(() => {
-    if (quote && prevPriceRef.current !== null && quote.ltp !== prevPriceRef.current) {
-      setPriceDir(quote.ltp > prevPriceRef.current ? "up" : "down");
+    if (quoteLtp > 0 && prevPriceRef.current !== null && quoteLtp !== prevPriceRef.current) {
+      setPriceDir(quoteLtp > prevPriceRef.current ? "up" : "down");
       setPulseKey((k) => k + 1);
     }
-    if (quote) prevPriceRef.current = quote.ltp;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quote?.ltp]);
+    if (quoteLtp > 0) prevPriceRef.current = quoteLtp;
+  }, [quoteLtp]);
 
   const openOrder = (type: OrderType) => {
     setOrderType(type);

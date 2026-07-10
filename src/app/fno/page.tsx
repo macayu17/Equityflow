@@ -25,6 +25,38 @@ type FutureRow = {
   tradable: boolean;
 };
 
+type RawOptionLeg = {
+  ticker?: string;
+  tradingSymbol?: string;
+  ltp?: number;
+  lotSize?: number;
+  change?: number;
+  changePct?: number;
+  changePercent?: number;
+  openInterest?: number;
+  changeinOpenInterest?: number;
+  oiChange?: number;
+  volume?: number;
+  iv?: number;
+  delta?: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
+  greeks?: Partial<Record<"iv" | "delta" | "gamma" | "theta" | "vega", number>>;
+};
+
+type RawOptionRow = {
+  strikePrice?: number;
+  CE?: RawOptionLeg;
+  PE?: RawOptionLeg;
+  ce?: RawOptionLeg;
+  pe?: RawOptionLeg;
+};
+
+function hasOptionLegs(row: RawOptionRow): boolean {
+  return Boolean((row.CE || row.ce) && (row.PE || row.pe));
+}
+
 export default function FnoPage() {
   return (
     <Suspense fallback={<div className="flex items-center justify-center h-64 text-muted dark:text-muted-dark">Loading F&amp;O...</div>}>
@@ -79,13 +111,11 @@ function FnoPageContent() {
       : generateMockOptionChain(underlying.ticker, spotPrice, underlying.lotSize);
 
     if (Array.isArray(rows) && rows.length > 0) {
-      return rows
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((row: any) => (row?.CE || row?.ce) && (row?.PE || row?.pe))
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((row: any) => {
-          const ce = row.CE || row.ce;
-          const pe = row.PE || row.pe;
+      return (rows as RawOptionRow[])
+        .filter(hasOptionLegs)
+        .map((row) => {
+          const ce = (row.CE || row.ce)!;
+          const pe = (row.PE || row.pe)!;
           const strikePrice = Number(row.strikePrice);
           const expiryCode = expiry.replaceAll("-", "").slice(2);
           const localCeTicker = `${underlying.ticker}${expiryCode}${Math.round(strikePrice)}CE`;
