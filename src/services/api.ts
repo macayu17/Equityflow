@@ -209,6 +209,39 @@ export interface WorkstationSnapshot {
   ts: string;
 }
 
+type TechnicalVerdict = "Bullish" | "Bearish" | "Neutral" | "Oversold" | "Overbought" | "Highly volatile" | string;
+
+export interface StockDetailsResponse {
+  name?: string;
+  totalTradedValue?: number;
+  upperCircuit?: number;
+  lowerCircuit?: number;
+  week52High: number;
+  week52Low: number;
+  fundamentals?: {
+    marketCap: number;
+    pe: number;
+    industryPe: number;
+    pb: number;
+    eps: number;
+    roe: number;
+    dividendYield: number;
+    bookValue: number;
+    faceValue: number;
+    debtToEquity: number;
+  };
+  technicals?: {
+    supportResistance?: Record<"s1" | "s2" | "s3" | "pivot" | "r1" | "r2" | "r3", number>;
+    indicators?: Record<"rsi" | "macd" | "beta", { value: number | string; verdict: TechnicalVerdict }>;
+    summary?: {
+      verdict: TechnicalVerdict;
+      bearish: number;
+      neutral: number;
+      bullish: number;
+    };
+  };
+}
+
 export async function getStockList(): Promise<StockListItem[]> {
   const apiData = await apiFetch<StockListItem[]>("/api/stocks");
   return apiData ?? [];
@@ -238,19 +271,23 @@ export async function getFullQuote(
   tradingSymbol: string,
   exchange: string = "NSE",
   segment: string = "CASH"
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> {
-  return apiFetch(`/api/quote?exchange=${exchange}&segment=${segment}&trading_symbol=${tradingSymbol}`);
+): Promise<StockQuote | null> {
+  return apiFetch<StockQuote>(`/api/quote?exchange=${exchange}&segment=${segment}&trading_symbol=${tradingSymbol}`);
 }
 
 // â”€â”€â”€ Batch LTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function getBatchLtp(
   exchangeSymbols: string[],
   segment: string = "CASH"
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> {
+): Promise<{ prices?: Record<string, number> } | null> {
   const symbols = exchangeSymbols.join(",");
-  return apiFetch(`/api/ltp?segment=${segment}&exchange_symbols=${symbols}`);
+  return apiFetch<{ prices?: Record<string, number> }>(`/api/ltp?segment=${segment}&exchange_symbols=${symbols}`);
+}
+
+export interface OptionChainResponse {
+  source?: string;
+  underlyingLtp?: number;
+  strikes?: unknown[];
 }
 
 // â”€â”€â”€ Option Chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -258,9 +295,8 @@ export async function getOptionChain(
   underlying: string,
   expiryDate: string,
   exchange: string = "NSE"
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> {
-  return apiFetch(
+): Promise<OptionChainResponse | null> {
+  return apiFetch<OptionChainResponse>(
     `/api/option-chain?exchange=${exchange}&underlying=${underlying}&expiry_date=${expiryDate}`
   );
 }
@@ -271,9 +307,8 @@ export async function getGreeks(
   tradingSymbol: string,
   expiry: string,
   exchange: string = "NSE"
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> {
-  return apiFetch(
+): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>(
     `/api/greeks?exchange=${exchange}&underlying=${underlying}&trading_symbol=${tradingSymbol}&expiry=${expiry}`
   );
 }
@@ -293,51 +328,42 @@ export interface PlaceOrderParams {
   order_reference_id?: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function placeOrder(order: PlaceOrderParams): Promise<any> {
-  return apiPost("/api/order/create", order);
+export async function placeOrder(order: PlaceOrderParams): Promise<Record<string, unknown> | null> {
+  return apiPost<Record<string, unknown>>("/api/order/create", order);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function modifyOrder(params: { groww_order_id: string; segment?: string; order_type?: string; quantity?: number; price?: number; trigger_price?: number }): Promise<any> {
-  return apiPost("/api/order/modify", params);
+export async function modifyOrder(params: { groww_order_id: string; segment?: string; order_type?: string; quantity?: number; price?: number; trigger_price?: number }): Promise<Record<string, unknown> | null> {
+  return apiPost<Record<string, unknown>>("/api/order/modify", params);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function cancelOrder(growwOrderId: string, segment: string = "CASH"): Promise<any> {
-  return apiPost("/api/order/cancel", { groww_order_id: growwOrderId, segment });
+export async function cancelOrder(growwOrderId: string, segment: string = "CASH"): Promise<Record<string, unknown> | null> {
+  return apiPost<Record<string, unknown>>("/api/order/cancel", { groww_order_id: growwOrderId, segment });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getOrderList(segment: string = "CASH"): Promise<any> {
-  return apiFetch(`/api/order/list?segment=${segment}`);
+export async function getOrderList(segment: string = "CASH"): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>(`/api/order/list?segment=${segment}`);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getOrderStatus(growwOrderId: string, segment: string = "CASH"): Promise<any> {
-  return apiFetch(`/api/order/status/${growwOrderId}?segment=${segment}`);
+export async function getOrderStatus(growwOrderId: string, segment: string = "CASH"): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>(`/api/order/status/${growwOrderId}?segment=${segment}`);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getOrderDetail(growwOrderId: string, segment: string = "CASH"): Promise<any> {
-  return apiFetch(`/api/order/detail/${growwOrderId}?segment=${segment}`);
+export async function getOrderDetail(growwOrderId: string, segment: string = "CASH"): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>(`/api/order/detail/${growwOrderId}?segment=${segment}`);
 }
 
 // â”€â”€â”€ Stock Details (Groww-style) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getStockDetails(ticker: string): Promise<any> {
-  return apiFetch(`/api/stock-details/${ticker}`);
+export async function getStockDetails(ticker: string): Promise<StockDetailsResponse | null> {
+  return apiFetch<StockDetailsResponse>(`/api/stock-details/${ticker}`);
 }
 
 // â”€â”€â”€ Portfolio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getHoldings(): Promise<any> {
-  return apiFetch("/api/holdings");
+export async function getHoldings(): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>("/api/holdings");
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getPositions(segment?: string): Promise<any> {
+export async function getPositions(segment?: string): Promise<Record<string, unknown> | null> {
   const query = segment ? `?segment=${segment}` : "";
-  return apiFetch(`/api/positions${query}`);
+  return apiFetch<Record<string, unknown>>(`/api/positions${query}`);
 }
 
