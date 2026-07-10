@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { MarketStatusBadge } from "@/components/market/market-status";
 import type { OrderType } from "@/lib/types";
+import { getTickerPositionSummary } from "@/lib/position-classification";
 
 export default function CommodityDetailPage() {
   const params = useParams();
@@ -51,7 +52,7 @@ export default function CommodityDetailPage() {
   const [priceDir, setPriceDir] = useState<"up" | "down" | null>(null);
 
   const commodityInfo = MOCK_COMMODITIES.find((c) => c.ticker === ticker);
-  const position = positions.find((p) => p.ticker === ticker);
+  const position = getTickerPositionSummary(positions, ticker);
   const quoteLtp = quote?.ltp ?? 0;
 
   // Update position LTP
@@ -242,7 +243,7 @@ export default function CommodityDetailPage() {
             {position && (
               <div className="rounded-md bg-surface dark:bg-elevated-dark p-3 space-y-2">
                 <div className="text-xs font-medium text-muted dark:text-muted-dark uppercase tracking-wider">
-                  Your Position
+                  Your Position{position.count > 1 ? `s (${position.count})` : ""}
                 </div>
                 <div className="flex justify-between text-xs">
                   <span className="text-muted dark:text-muted-dark">Quantity</span>

@@ -25,6 +25,7 @@ import {
 import { MarketStatusBadge } from "@/components/market/market-status";
 import { getMarketStatus } from "@/lib/market-hours";
 import type { OrderType } from "@/lib/types";
+import { getTickerPositionSummary } from "@/lib/position-classification";
 
 export default function StockDetailPage() {
   const params = useParams();
@@ -42,7 +43,7 @@ export default function StockDetailPage() {
   const [priceDir, setPriceDir] = useState<"up" | "down" | null>(null);
 
   const stockInfo = MOCK_STOCKS.find((s) => s.ticker === ticker);
-  const position = positions.find((p) => p.ticker === ticker);
+  const position = getTickerPositionSummary(positions, ticker);
   const isEquityMarketOpen = getMarketStatus("equity").isOpen;
 
   // Use SSE stream for fast LTP, fall back to HTTP poll
@@ -426,7 +427,7 @@ export default function StockDetailPage() {
             {position && (
               <div className="rounded-lg bg-surface dark:bg-elevated-dark p-3.5 space-y-2.5">
                 <div className="text-[10px] font-semibold text-muted dark:text-muted-dark uppercase tracking-widest">
-                  Your Position
+                  Your Position{position.count > 1 ? `s (${position.count})` : ""}
                 </div>
                 <div className="flex justify-between text-xs">
                   <span className="text-secondary dark:text-secondary-dark">Quantity</span>
