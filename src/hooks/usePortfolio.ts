@@ -11,6 +11,9 @@ import { getFnoContractKind } from "@/lib/fno-pricing";
 // External store to sync portfolio state across components
 let listeners: (() => void)[] = [];
 let version = 0;
+let pendingOrderTimer: ReturnType<typeof setInterval> | null = null;
+let pendingOrderRunning = false;
+let pendingOrderRunners: Array<() => Promise<void>> = [];
 
 function emitChange() {
   version++;
@@ -26,6 +29,35 @@ function subscribe(listener: () => void) {
 
 function getVersion() {
   return version;
+}
+
+async function runPendingOrderPoller() {
+  const runner = pendingOrderRunners[pendingOrderRunners.length - 1];
+  if (pendingOrderRunning || !runner) return;
+  pendingOrderRunning = true;
+  try {
+    await runner();
+  } finally {
+    pendingOrderRunning = false;
+  }
+}
+
+function subscribePendingOrderPoller(run: () => Promise<void>) {
+  pendingOrderRunners.push(run);
+
+  if (!pendingOrderTimer) {
+    void runPendingOrderPoller();
+    pendingOrderTimer = setInterval(runPendingOrderPoller, Math.max(1_000, API_CONFIG.pricePollingMs));
+  }
+
+  return () => {
+    pendingOrderRunners = pendingOrderRunners.filter((runner) => runner !== run);
+    if (pendingOrderRunners.length === 0 && pendingOrderTimer) {
+      clearInterval(pendingOrderTimer);
+      pendingOrderTimer = null;
+      pendingOrderRunners = [];
+    }
+  };
 }
 
 export function usePortfolio() {
@@ -107,11 +139,10 @@ export function usePortfolio() {
       }
     };
 
-    run();
-    const interval = setInterval(run, 10_000);
+    const unsubscribe = subscribePendingOrderPoller(run);
     return () => {
       active = false;
-      clearInterval(interval);
+      unsubscribe();
     };
   }, [hydrated, manager, resolveOpenPrice]);
 
