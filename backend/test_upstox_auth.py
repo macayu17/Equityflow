@@ -9,7 +9,11 @@ from backend import main
 
 
 class UpstoxAuthHelpersTest(unittest.TestCase):
+    def setUp(self):
+        self._upstox_access_token = main.UPSTOX_ACCESS_TOKEN
+
     def tearDown(self):
+        main.UPSTOX_ACCESS_TOKEN = self._upstox_access_token
         main._upstox_runtime_access_token = main.UPSTOX_ACCESS_TOKEN
         main._upstox_token_meta = {}
         main._market_data_provider_preference = main.MARKET_DATA_PROVIDER
@@ -44,6 +48,20 @@ class UpstoxAuthHelpersTest(unittest.TestCase):
             main._upstox_token_meta = {}
             self.assertEqual(main._get_upstox_access_token(token_file=token_file), "live-token")
             self.assertTrue(main._is_upstox_configured())
+
+    def test_expired_runtime_token_is_not_reported_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main.UPSTOX_ACCESS_TOKEN = ""
+            main._upstox_runtime_access_token = "expired-token"
+            main._upstox_token_meta = {
+                "source": "oauth_runtime",
+                "expires_at": "2020-01-01T03:30:00+05:30",
+            }
+
+            token_file = str(Path(tmp) / "missing-token.json")
+
+            self.assertEqual(main._get_upstox_access_token(token_file=token_file), "")
+            self.assertFalse(main._is_upstox_configured())
 
     def test_provider_preference_accepts_groww_and_upstox_aliases(self):
         self.assertEqual(main._set_market_provider_preference("upstoxx"), "upstox")

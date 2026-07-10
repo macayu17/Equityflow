@@ -335,8 +335,17 @@ def _load_upstox_token_file(token_file: str | None = None) -> str:
 
 
 def _get_upstox_access_token(token_file: str | None = None) -> str:
+    global _upstox_runtime_access_token, _upstox_token_meta
     if _upstox_runtime_access_token:
-        return _upstox_runtime_access_token
+        expiry = _parse_upstox_expiry(_upstox_token_meta.get("expires_at"))
+        if expiry and expiry <= datetime.now(IST):
+            _upstox_runtime_access_token = ""
+            _upstox_token_meta = {
+                **_upstox_token_meta,
+                "expired": True,
+            }
+        else:
+            return _upstox_runtime_access_token
     if UPSTOX_ACCESS_TOKEN:
         return UPSTOX_ACCESS_TOKEN
     return _load_upstox_token_file(token_file)
