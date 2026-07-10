@@ -55,4 +55,28 @@ describe("apiGetJson", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(stale).toEqual({ ltp: 2500 });
   });
+
+  it("does not dedupe forced refreshes into an existing request", async () => {
+    let releaseFirst!: () => void;
+    const firstResponseReady = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await firstResponseReady;
+        return jsonResponse({ ltp: 100 });
+      })
+      .mockResolvedValueOnce(jsonResponse({ ltp: 101 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const path = "/api/quote?exchange=NSE&segment=CASH&trading_symbol=RELIANCE";
+    const first = apiGetJson(path);
+    const forced = apiGetJson(path, { force: true });
+
+    await expect(forced).resolves.toEqual({ ltp: 101 });
+    releaseFirst();
+    await expect(first).resolves.toEqual({ ltp: 100 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

@@ -62,7 +62,7 @@ function readRetryAfterMs(res: Response) {
 }
 
 export async function apiGetJson<T>(path: string, options: ApiGetOptions = {}): Promise<T | null> {
-  const { signal, ttlMs = defaultTtlMs(path), force = false, dedupe = !signal } = options;
+  const { signal, ttlMs = defaultTtlMs(path), force = false, dedupe = !signal && !force } = options;
   const cacheKey = `GET ${path}`;
   const now = Date.now();
   const cached = responseCache.get(cacheKey) as CacheEntry<T> | undefined;
