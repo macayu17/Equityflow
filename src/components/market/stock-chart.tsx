@@ -7,6 +7,7 @@ import type { Timeframe } from "@/lib/types";
 import { TIMEFRAMES } from "@/lib/types";
 import { getMarketStatus } from "@/lib/market-hours";
 import { apiGetJson } from "@/services/request-cache";
+import type { CandlestickData as ChartCandlestickData, HistogramData, IChartApi, ISeriesApi, LineData, UTCTimestamp } from "lightweight-charts";
 
 interface StockChartProps {
   ticker: string;
@@ -63,14 +64,10 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
   const intervalPickerRef = useRef<HTMLDivElement>(null);
 
   // ── Refs for chart lifecycle (cleaned up synchronously, no closure issues) ──
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const chartApiRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const candleSeriesRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const volumeSeriesRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const indicatorSeriesRef = useRef<Partial<Record<IndicatorKey, any>>>({});
+  const chartApiRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const indicatorSeriesRef = useRef<Partial<Record<IndicatorKey, ISeriesApi<"Line">>>>({});
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const disposedRef = useRef(false);
@@ -217,15 +214,14 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
     }));
   }, [getIntervalMinutes, normalizeCandleTime]);
 
-  const calculateLineData = useCallback((candles: CandleData[], indicator: IndicatorKey) => {
-    type UTCTimestamp = import("lightweight-charts").UTCTimestamp;
+  const calculateLineData = useCallback((candles: CandleData[], indicator: IndicatorKey): LineData<UTCTimestamp>[] => {
     if (indicator === "SMA50") {
       return candles.map((candle, index) => {
         if (index < 49) return null;
         const window = candles.slice(index - 49, index + 1);
         const value = window.reduce((sum, item) => sum + item.close, 0) / window.length;
         return { time: normalizeCandleTime(candle.time) as UTCTimestamp, value: Number(value.toFixed(2)) };
-      }).filter(Boolean);
+      }).filter((item): item is LineData<UTCTimestamp> => item !== null);
     }
 
     if (indicator === "VWAP") {
@@ -476,9 +472,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
 
       latestCandleRef.current = candles[candles.length - 1] ?? null;
 
-      type UTCTimestamp = import("lightweight-charts").UTCTimestamp;
-
-      const candleData = candles.map((c) => ({
+      const candleData: ChartCandlestickData<UTCTimestamp>[] = candles.map((c) => ({
         time: normalizeCandleTime(c.time) as UTCTimestamp,
         open: c.open,
         high: c.high,
@@ -486,7 +480,7 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
         close: c.close,
       }));
 
-      const volData = candles.map((c) => ({
+      const volData: HistogramData<UTCTimestamp>[] = candles.map((c) => ({
         time: normalizeCandleTime(c.time) as UTCTimestamp,
         value: c.volume,
         color: c.close >= c.open
@@ -524,12 +518,11 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
 
           latestCandleRef.current = processed[processed.length - 1] ?? latestCandleRef.current;
 
-          type UTCTimestamp = import("lightweight-charts").UTCTimestamp;
-          candleSeriesRef.current?.setData(processed.map((c) => ({
+          candleSeriesRef.current?.setData(processed.map((c): ChartCandlestickData<UTCTimestamp> => ({
             time: normalizeCandleTime(c.time) as UTCTimestamp,
             open: c.open, high: c.high, low: c.low, close: c.close,
           })));
-          volumeSeriesRef.current?.setData(processed.map((c) => ({
+          volumeSeriesRef.current?.setData(processed.map((c): HistogramData<UTCTimestamp> => ({
             time: normalizeCandleTime(c.time) as UTCTimestamp,
             value: c.volume,
             color: c.close >= c.open
@@ -567,7 +560,6 @@ export function StockChart({ ticker, exchange = "NSE", segment: segmentProp, hei
     latestCandleRef.current = patched;
 
     try {
-      type UTCTimestamp = import("lightweight-charts").UTCTimestamp;
       candleSeriesRef.current.update({
         time: normalizeCandleTime(patched.time) as UTCTimestamp,
         open: patched.open,
