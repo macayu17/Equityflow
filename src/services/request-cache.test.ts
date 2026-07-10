@@ -77,6 +77,8 @@ describe("apiGetJson", () => {
     await expect(forced).resolves.toEqual({ ltp: 101 });
     releaseFirst();
     await expect(first).resolves.toEqual({ ltp: 100 });
+    const cached = await apiGetJson(path);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(cached).toEqual({ ltp: 101 });
   });
 });

@@ -4,6 +4,7 @@ type CacheEntry<T = unknown> = {
   data: T;
   expiresAt: number;
   lastUsedAt: number;
+  requestId: number;
 };
 
 type ApiGetOptions = {
@@ -17,6 +18,7 @@ const responseCache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<unknown | null>>();
 
 let apiCooldownUntil = 0;
+let requestSerial = 0;
 
 function defaultTtlMs(path: string): number {
   const livePriceTtlMs = Math.max(1_000, Math.min(API_CONFIG.pricePollingMs, 2_500));
@@ -66,6 +68,7 @@ export async function apiGetJson<T>(path: string, options: ApiGetOptions = {}): 
   const cacheKey = `GET ${path}`;
   const now = Date.now();
   const cached = responseCache.get(cacheKey) as CacheEntry<T> | undefined;
+  const requestId = ++requestSerial;
 
   if (!force && cached && cached.expiresAt > now) {
     cached.lastUsedAt = now;
@@ -97,12 +100,17 @@ export async function apiGetJson<T>(path: string, options: ApiGetOptions = {}): 
 
       const data = (await res.json()) as T;
       if (ttlMs > 0) {
-        responseCache.set(cacheKey, {
-          data,
-          expiresAt: Date.now() + ttlMs,
-          lastUsedAt: Date.now(),
-        });
-        pruneCache();
+        const latest = responseCache.get(cacheKey);
+        if (!latest || (latest.requestId ?? 0) <= requestId) {
+          const fetchedAt = Date.now();
+          responseCache.set(cacheKey, {
+            data,
+            expiresAt: fetchedAt + ttlMs,
+            lastUsedAt: fetchedAt,
+            requestId,
+          });
+          pruneCache();
+        }
       }
       return data;
     } catch (err) {
@@ -156,4 +164,5 @@ export function clearApiRequestCache() {
   responseCache.clear();
   inFlight.clear();
   apiCooldownUntil = 0;
+  requestSerial = 0;
 }
