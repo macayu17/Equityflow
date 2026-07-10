@@ -231,6 +231,17 @@ export function useStreamPrice(ticker: string | null): TickerPrice | null {
   return prices[ticker] ?? null;
 }
 
+export function usePriceSubscriptions(tickers: readonly string[]) {
+  const { subscribe, unsubscribe } = useContext(PriceStreamContext);
+  const tickerKey = [...new Set(tickers.filter(Boolean))].sort().join(",");
+
+  useEffect(() => {
+    const uniqueTickers = tickerKey ? tickerKey.split(",") : [];
+    uniqueTickers.forEach(subscribe);
+    return () => uniqueTickers.forEach(unsubscribe);
+  }, [tickerKey, subscribe, unsubscribe]);
+}
+
 /** Get commodity price for a single ticker from the SSE stream */
 export function useStreamCommodityPrice(ticker: string | null): TickerPrice | null {
   const { commodities } = useContext(PriceStreamContext);

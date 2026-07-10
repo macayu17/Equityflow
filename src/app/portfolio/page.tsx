@@ -7,19 +7,20 @@ import { PortfolioAnalyticsPanel } from "@/components/portfolio/portfolio-analyt
 import { PositionsSection } from "@/components/portfolio/positions-section";
 import { OrdersHistory } from "@/components/portfolio/orders-history";
 import { usePortfolio } from "@/hooks/usePortfolio";
-import { useAllStreamPrices } from "@/hooks/usePriceStream";
-import type { Position } from "@/lib/types";
+import { useAllStreamPrices, usePriceSubscriptions } from "@/hooks/usePriceStream";
 import { Activity, BriefcaseBusiness, CandlestickChart, Clock3, History, RotateCcw, Search, ShieldCheck } from "lucide-react";
 import { useToast } from "@/components/toast-provider";
 import { apiGetJson } from "@/services/request-cache";
 import { cn, formatCurrency, formatPercentage, getPriceChangeColor } from "@/lib/utils";
 import { shouldAcceptFnoLtp } from "@/lib/fno-pricing";
 import { isDeliveryHoldingPosition, isFnoPosition } from "@/lib/position-classification";
+import { MOCK_COMMODITIES } from "@/lib/constants";
 
 export default function PortfolioPage() {
   const { resetAccount, positions, updateLTP, summary, balance, risk, orders } = usePortfolio();
   const { prices, commodities } = useAllStreamPrices();
   const { toast } = useToast();
+  const commodityTickers = useMemo(() => new Set(MOCK_COMMODITIES.map((c) => c.ticker)), []);
 
   // Map simplified ticker → resolved Groww FNO trading symbol
   const resolvedSymbolsRef = useRef<Record<string, string | null>>({});
@@ -32,6 +33,13 @@ export default function PortfolioPage() {
     () => positions.filter(isDeliveryHoldingPosition),
     [positions]
   );
+  const streamedPositionTickers = useMemo(
+    () => positions
+      .filter((position) => !isFnoPosition(position) && !commodityTickers.has(position.ticker))
+      .map((position) => position.ticker),
+    [positions, commodityTickers]
+  );
+  usePriceSubscriptions(streamedPositionTickers);
   const pendingOrders = useMemo(() => orders.filter((order) => order.status === "PENDING" || order.status === "PARTIAL").length, [orders]);
   const accountEquity = risk.marginAvailable + risk.marginUsed;
   const exposure = accountEquity > 0 ? (risk.grossExposure / accountEquity) * 100 : 0;
